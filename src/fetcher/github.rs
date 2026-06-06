@@ -81,8 +81,19 @@ impl GitHubFetcher {
         Ok(())
     }
 
-    /// Recursively collect source files matching include/exclude patterns
-    fn collect_files(&self, dir: &Path) -> Result<Vec<SourceFile>> {
+    /// Recursively collect source files matching include/exclude patterns.
+    /// If `dir` is a file, returns a single-element vec with that file.
+    fn collect_files(&self, path: &Path) -> Result<Vec<SourceFile>> {
+        if path.is_file() {
+            let rel_path = path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown")
+                .to_string();
+            return Ok(self.read_file(path, &rel_path)
+                .into_iter()
+                .collect());
+        }
+
         let include_globs: Vec<Pattern> = self.include_patterns
             .iter()
             .filter_map(|p| Pattern::new(p).ok())
@@ -94,7 +105,7 @@ impl GitHubFetcher {
             .collect();
 
         let mut files = Vec::new();
-        self.walk_dir(dir, dir, &include_globs, &exclude_globs, &mut files)?;
+        self.walk_dir(path, path, &include_globs, &exclude_globs, &mut files)?;
         Ok(files)
     }
 
