@@ -85,11 +85,9 @@ impl GitHubFetcher {
     /// If `dir` is a file, returns a single-element vec with that file.
     fn collect_files(&self, path: &Path) -> Result<Vec<SourceFile>> {
         if path.is_file() {
-            let rel_path = path.file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown")
-                .to_string();
-            return Ok(self.read_file(path, &rel_path)
+            // Use full path as-is so main.rs can re-read the file for chunk display
+            let display_path = path.to_string_lossy().to_string();
+            return Ok(self.read_file(path, &display_path)
                 .into_iter()
                 .collect());
         }

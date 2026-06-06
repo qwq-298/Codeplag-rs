@@ -151,24 +151,38 @@ fn is_keyword(word: &str) -> bool {
     )
 }
 
-/// Compute k-gram hashes from token sequence
+/// Compute k-gram hashes from token sequence.
+/// Uses token text for keywords/operators (to distinguish different constructs)
+/// and a placeholder for identifiers (to maintain renaming resistance).
 pub fn compute_k_gram_hashes(tokens: &[Token], k: usize) -> Vec<u32> {
     if tokens.len() < k {
         return Vec::new();
     }
 
-    // Generate token kind sequence for hashing
-    let kind_sequence: Vec<u8> = tokens
+    // Generate a representative byte for each token:
+    // - Keywords/operators/punctuation: use actual text hash (distinguishes `if` from `while`)
+    // - Identifiers: use constant 0xFF byte (renaming resistant)
+    // - Literals/numbers: use kind as-is (same literals produce same hash)
+    let token_bytes: Vec<u8> = tokens
         .iter()
-        .map(|t| t.kind as u8)
+        .map(|t| match t.kind {
+            TokenKind::Keyword | TokenKind::Operator | TokenKind::Punctuation => {
+                // Hash the actual text to distinguish different keywords/operators
+                let mut h = Sha256::new();
+                h.update(t.text.as_bytes());
+                h.finalize()[0]
+            }
+            TokenKind::Identifier => 0xFF, // placeholder: all identifiers look the same
+            TokenKind::Comment | TokenKind::Whitespace => 0x00, // ignore whitespace/comments
+            _ => t.kind as u8, // numbers, strings, etc.
+        })
         .collect();
 
-    let mut hashes = Vec::with_capacity(kind_sequence.len() - k + 1);
+    let mut hashes = Vec::with_capacity(token_bytes.len().saturating_sub(k - 1));
     let mut hasher = Sha256::new();
 
-    for window in kind_sequence.windows(k) {
+    for window in token_bytes.windows(k) {
         hasher.update(window);
-        // Take first 4 bytes of SHA-256 as u32 hash
         let hash = u32::from_be_bytes(hasher.finalize_reset()[..4].try_into().unwrap());
         hashes.push(hash);
     }
@@ -214,6 +228,95 @@ pub fn generate_fingerprints(source: &str, language: Language, k: usize, w: usiz
     let tokens = tokenize(source, language);
     let hashes = compute_k_gram_hashes(&tokens, k);
     winnow(&hashes, w)
+}
+
+/// Generate winnowing fingerprints with line number mapping.
+/// Returns (hash, line_number) pairs for chunk matching.
+pub fn generate_fingerprints_with_lines(
+    source: &str,
+    language: Language,
+    k: usize,
+    w: usize,
+) -> Vec<(u32, usize)> {
+    let tokens = tokenize(source, language);
+    let (hashes, line_map) = compute_k_gram_hashes_with_lines(&tokens, k);
+    let selected_indices = winnow_indices(&hashes, w);
+    selected_indices
+        .into_iter()
+        .map(|idx| (hashes[idx], line_map[idx]))
+        .collect()
+}
+
+/// Compute k-gram hashes with line number tracking.
+/// Returns (hashes, line_numbers) where line_numbers[i] is the line of the first token in k-gram i.
+fn compute_k_gram_hashes_with_lines(tokens: &[Token], k: usize) -> (Vec<u32>, Vec<usize>) {
+    let mut hashes = Vec::new();
+    let mut line_map = Vec::new();
+
+    if tokens.len() < k {
+        return (hashes, line_map);
+    }
+
+    let token_bytes: Vec<u8> = tokens
+        .iter()
+        .map(|t| match t.kind {
+            TokenKind::Keyword | TokenKind::Operator | TokenKind::Punctuation => {
+                let mut h = Sha256::new();
+                h.update(t.text.as_bytes());
+                h.finalize()[0]
+            }
+            TokenKind::Identifier => 0xFF,
+            TokenKind::Comment | TokenKind::Whitespace => 0x00,
+            _ => t.kind as u8,
+        })
+        .collect();
+
+    let mut hasher = Sha256::new();
+    hashes.reserve(token_bytes.len().saturating_sub(k - 1));
+    line_map.reserve(token_bytes.len().saturating_sub(k - 1));
+
+    for i in 0..token_bytes.len().saturating_sub(k - 1) {
+        let window = &token_bytes[i..(i + k).min(token_bytes.len())];
+        hasher.update(window);
+        let hash = u32::from_be_bytes(hasher.finalize_reset()[..4].try_into().unwrap());
+        hashes.push(hash);
+        // Line of the first token in this k-gram
+        line_map.push(tokens[i].line);
+    }
+
+    (hashes, line_map)
+}
+
+/// Winnow: return indices (into the hashes slice) of selected fingerprints.
+fn winnow_indices(hashes: &[u32], window_size: usize) -> Vec<usize> {
+    if hashes.is_empty() || window_size == 0 {
+        return Vec::new();
+    }
+
+    let mut indices = Vec::new();
+    let mut last_min_pos: isize = -1;
+
+    for i in 0..hashes.len().saturating_sub(window_size - 1) {
+        let window = &hashes[i..(i + window_size).min(hashes.len())];
+        if window.is_empty() {
+            continue;
+        }
+
+        let (min_idx_offset, _) = window
+            .iter()
+            .enumerate()
+            .min_by_key(|&(_, &h)| h)
+            .unwrap();
+
+        let min_pos = (i + min_idx_offset) as isize;
+
+        if min_pos != last_min_pos {
+            indices.push(i + min_idx_offset);
+            last_min_pos = min_pos;
+        }
+    }
+
+    indices
 }
 
 /// Calculate Jaccard similarity between two fingerprint sets

@@ -63,6 +63,8 @@ pub struct CodeFingerprint {
     pub file_path: String,
     /// Winnowing fingerprints (k-gram hashes)
     pub winnowing_hashes: Vec<u32>,
+    /// Winnowing fingerprints with line numbers for chunk matching
+    pub fingerprint_lines: Vec<(u32, usize)>,
     /// AST subtree structural hashes
     pub ast_hashes: Vec<u64>,
     /// Token count (for normalization)

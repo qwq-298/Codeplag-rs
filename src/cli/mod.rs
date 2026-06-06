@@ -38,13 +38,13 @@ pub enum Commands {
         output: String,
     },
 
-    /// Compare a single file against a directory
+    /// Compare a single file against another file or directory
     Compare {
         /// Path to the target file
         #[arg(short, long)]
         file: String,
 
-        /// Path to the directory to compare against
+        /// Path to a file or directory to compare against
         #[arg(short, long)]
         against: String,
 

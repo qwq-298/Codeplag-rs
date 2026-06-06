@@ -39,7 +39,8 @@ fn main() {
             engine.index_files(&files);
             let results = engine.compare_all();
 
-            print_results(&results, output);
+            let file_refs: Vec<&codeplag::core::types::SourceFile> = files.iter().collect();
+            print_results_with_files(&results, output, &file_refs);
         }
 
         Commands::Compare { file, against, output } => {
@@ -61,18 +62,29 @@ fn main() {
                 std::process::exit(1);
             }
 
-            println!(
-                "Comparing {} against {} files in {}",
-                target_files[0].path,
-                against_files.len(),
-                against
-            );
+            if against_files.len() == 1 {
+                println!(
+                    "Comparing {} <-> {}",
+                    target_files[0].path,
+                    against_files[0].path
+                );
+            } else {
+                println!(
+                    "Comparing {} against {} files in {}",
+                    target_files[0].path,
+                    against_files.len(),
+                    against
+                );
+            }
 
             let mut engine = SimilarityEngine::new(config);
             engine.index_files(&against_files);
             let results = engine.compare_against(&target_files[0]);
 
-            print_results(&results, output);
+            // Merge target + against for content lookup in chunk display
+            let all_files: Vec<&codeplag::core::types::SourceFile> =
+                target_files.iter().chain(against_files.iter()).collect();
+            print_results_with_files(&results, output, &all_files);
         }
 
         Commands::Fetch { repo, output } => {
@@ -89,12 +101,23 @@ fn main() {
             engine.index_files(&files);
             let results = engine.compare_all();
 
-            print_results(&results, output);
+            let file_refs: Vec<&codeplag::core::types::SourceFile> = files.iter().collect();
+            print_results_with_files(&results, output, &file_refs);
         }
     }
 }
 
-fn print_results(results: &[codeplag::core::types::SimilarityResult], format: &str) {
+fn print_results_with_files(
+    results: &[codeplag::core::types::SimilarityResult],
+    format: &str,
+    all_files: &[&codeplag::core::types::SourceFile],
+) {
+    // Build content lookup by path
+    let content_map: std::collections::HashMap<&str, &str> = all_files
+        .iter()
+        .map(|f| (f.path.as_str(), f.content.as_str()))
+        .collect();
+
     match format {
         "json" => {
             let json = serde_json::to_string_pretty(results)
@@ -124,10 +147,75 @@ fn print_results(results: &[codeplag::core::types::SimilarityResult], format: &s
                     result.winnowing_score * 100.0,
                     result.ast_score * 100.0
                 );
+
+                // Display matched chunks
+                if !result.matched_chunks.is_empty() {
+                    let lines_a: Vec<&str> = content_map
+                        .get(result.file_a.as_str())
+                        .map(|c| c.lines().collect())
+                        .unwrap_or_default();
+                    let lines_b: Vec<&str> = content_map
+                        .get(result.file_b.as_str())
+                        .map(|c| c.lines().collect())
+                        .unwrap_or_default();
+                    print_chunks(&result.matched_chunks, &lines_a, &lines_b);
+                }
                 println!();
             }
 
             println!("Found {} similar file pairs.", results.len());
         }
+    }
+}
+
+/// Display matched chunks in a visual side-by-side format
+fn print_chunks(
+    chunks: &[codeplag::core::types::ChunkMatch],
+    lines_a: &[&str],
+    lines_b: &[&str],
+) {
+    const MAX_WIDTH: usize = 50;
+
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        println!();
+        println!(
+            "   ── Chunk {} ({:.0}% match, lines {}-{} ↔ {}-{}) ──",
+            chunk_idx + 1,
+            chunk.score * 100.0,
+            chunk.line_a,
+            chunk.line_end_a,
+            chunk.line_b,
+            chunk.line_end_b,
+        );
+
+        let max_lines = (chunk.line_end_a - chunk.line_a + 1)
+            .max(chunk.line_end_b - chunk.line_b + 1);
+
+        for offset in 0..max_lines {
+            let idx_a = chunk.line_a.saturating_sub(1).saturating_add(offset);
+            let idx_b = chunk.line_b.saturating_sub(1).saturating_add(offset);
+
+            let left = format!(
+                "{:>4} | {}",
+                idx_a + 1,
+                truncate(lines_a.get(idx_a).copied().unwrap_or(""), MAX_WIDTH)
+            );
+            let right = format!(
+                "{:>4} | {}",
+                idx_b + 1,
+                truncate(lines_b.get(idx_b).copied().unwrap_or(""), MAX_WIDTH)
+            );
+
+            println!("   {:<54}  {}", left, right);
+        }
+    }
+}
+
+/// Truncate a string to max_width, adding "…" if cut
+fn truncate(s: &str, max_width: usize) -> String {
+    if s.len() <= max_width {
+        format!("{: <max_width$}", s, max_width = max_width)
+    } else {
+        format!("{}…", &s[..max_width - 1])
     }
 }

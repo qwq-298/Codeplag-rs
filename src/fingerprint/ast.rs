@@ -26,11 +26,15 @@ pub fn generate_ast_hashes(source: &str, language: Language) -> Option<Vec<u64>>
     Some(hashes)
 }
 
-/// Recursively collect structural hashes from AST nodes
+/// Recursively collect structural hashes from AST nodes.
+/// Only hashes internal nodes (those with children) — leaf nodes like
+/// identifiers and literals are too common and would inflate similarity.
 fn collect_subtree_hashes(node: &Node, source: &str, hashes: &mut Vec<u64>) {
-    // Compute structural hash for this node
-    let hash = structural_hash(node, source);
-    hashes.push(hash);
+    // Only hash internal nodes (with children), skip leaf nodes
+    if node.child_count() > 0 {
+        let hash = structural_hash(node, source);
+        hashes.push(hash);
+    }
 
     // Recurse into children
     for i in 0..node.child_count() {
