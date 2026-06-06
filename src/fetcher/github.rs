@@ -151,7 +151,9 @@ impl GitHubFetcher {
     }
 
     fn read_file(&self, path: &Path, rel_path: &str) -> Option<SourceFile> {
-        let content = std::fs::read_to_string(path).ok()?;
+        let mut content = std::fs::read_to_string(path).ok()?;
+        // Normalize CRLF → LF so tokenizer line tracking works correctly
+        content = content.replace("\r\n", "\n");
         let ext = path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("");

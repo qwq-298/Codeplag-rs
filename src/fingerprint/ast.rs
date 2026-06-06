@@ -76,6 +76,107 @@ fn structural_hash(node: &Node, source: &str) -> u64 {
     u64::from_be_bytes(hash_bytes[..8].try_into().unwrap())
 }
 
+/// Extract function definitions from source code.
+///
+/// Uses tree-sitter to identify function/method nodes and returns
+/// their names, source text, and line ranges.
+pub fn extract_functions(source: &str, language: Language) -> Vec<crate::core::types::FunctionSnippet> {
+    let ts_lang = match language.tree_sitter_language() {
+        Some(l) => l,
+        None => return Vec::new(),
+    };
+
+    let mut parser = Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return Vec::new();
+    }
+
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    let root = tree.root_node();
+    let mut functions = Vec::new();
+
+    let function_kinds = match language {
+        Language::Rust => &["function_item"][..],
+        Language::Python => &["function_definition"][..],
+        Language::JavaScript | Language::TypeScript => &[
+            "function_declaration",
+            "function_expression",
+            "arrow_function",
+            "method_definition",
+        ],
+        _ => return Vec::new(),
+    };
+
+    collect_function_nodes(&root, function_kinds, source, &mut functions);
+
+    // Set the language on each function
+    for f in &mut functions {
+        f.language = language;
+    }
+
+    functions
+}
+
+/// Recursively find function nodes in the AST
+fn collect_function_nodes(
+    node: &Node,
+    function_kinds: &[&str],
+    source: &str,
+    functions: &mut Vec<crate::core::types::FunctionSnippet>,
+) {
+    use crate::core::types::FunctionSnippet;
+
+    if function_kinds.contains(&node.kind()) {
+        // Extract function name.
+        // For function_declaration/function_item: first identifier child is the name.
+        // For arrow functions/expressions: might be assigned to a variable — leave as anonymous.
+        let name = node
+            .children(&mut node.walk())
+            .find(|c| {
+                c.kind() == "identifier"
+                    || c.kind() == "property_identifier"
+            })
+            .and_then(|c| c.utf8_text(source.as_bytes()).ok())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                // For Python/C, try alternate: the `name` field
+                node.child_by_field_name("name")
+                    .and_then(|c| c.utf8_text(source.as_bytes()).ok())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "anonymous".to_string())
+            });
+
+        let start_line = node.start_position().row + 1;
+        let end_line = node.end_position().row + 1;
+
+        let content: String = source
+            .lines()
+            .skip(start_line - 1)
+            .take(end_line - start_line + 1)
+            .map(|l| format!("{}\n", l))
+            .collect();
+
+        functions.push(FunctionSnippet {
+            name,
+            content,
+            start_line,
+            end_line,
+            language: Language::Unknown, // filled in by caller
+        });
+        return; // don't recurse into nested functions (e.g., closures)
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_function_nodes(&child, function_kinds, source, functions);
+        }
+    }
+}
+
 /// Check if a node kind represents a literal value
 fn is_literal_kind(kind: &str) -> bool {
     kind.contains("integer")
@@ -154,8 +255,18 @@ fn compute(y: i32) -> i32 {
         let h1 = generate_ast_hashes(code1, Language::Rust).unwrap();
         let h2 = generate_ast_hashes(code2, Language::Rust).unwrap();
         let sim = ast_jaccard_similarity(&h1, &h2);
-        // Should be highly similar despite different names
-        assert!(sim > 0.5, "Expected similarity > 0.5, got {}", sim);
+        // Should be 100% when only variable/function names differ
+        assert!(sim > 0.99, "Expected 100% similarity, got {:.2}%. Hashes A: {:?}, B: {:?}", sim * 100.0, &h1[..5.min(h1.len())], &h2[..5.min(h2.len())]);
+    }
+
+    #[test]
+    fn test_local_variable_rename_resistant() {
+        let code1 = "let student_score = 100;";
+        let code2 = "let x = 100;";
+        let h1 = generate_ast_hashes(code1, Language::Rust).unwrap();
+        let h2 = generate_ast_hashes(code2, Language::Rust).unwrap();
+        let sim = ast_jaccard_similarity(&h1, &h2);
+        assert!(sim > 0.99, "let with renamed var should be 100%, got {:.2}%", sim * 100.0);
     }
 
     #[test]

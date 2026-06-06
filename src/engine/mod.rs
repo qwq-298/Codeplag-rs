@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::core::types::{
-    AnalyzerConfig, ChunkMatch, CodeFingerprint, SimilarityResult, SourceFile,
+    AnalyzerConfig, ChunkMatch, CodeFingerprint, FunctionMatch,
+    SimilarityResult, SourceFile,
 };
 use crate::fingerprint::winnowing;
 use crate::fingerprint::ast;
@@ -56,6 +57,13 @@ impl SimilarityEngine {
                 self.config.window_size,
             );
 
+            // Generate ALL k-gram hashes with line info for accurate chunk matching
+            let all_kgraph_lines = winnowing::generate_all_kgraph_lines(
+                &file.content,
+                file.language,
+                self.config.k_gram_size,
+            );
+
             // Generate AST fingerprints
             let ast_hashes = ast::generate_ast_hashes(&file.content, file.language)
                 .unwrap_or_default();
@@ -64,6 +72,7 @@ impl SimilarityEngine {
                 file_path: file.path.clone(),
                 winnowing_hashes,
                 fingerprint_lines,
+                all_kgraph_lines,
                 ast_hashes,
                 token_count,
                 language: file.language,
@@ -160,6 +169,11 @@ impl SimilarityEngine {
                 self.config.window_size,
             ),
             fingerprint_lines,
+            all_kgraph_lines: winnowing::generate_all_kgraph_lines(
+                &target.content,
+                target.language,
+                self.config.k_gram_size,
+            ),
             ast_hashes: ast::generate_ast_hashes(&target.content, target.language)
                 .unwrap_or_default(),
             token_count: target.content.lines().count(),
@@ -215,106 +229,216 @@ impl SimilarityEngine {
     pub fn indexed_count(&self) -> usize {
         self.fingerprints.len()
     }
+
+    /// Compare functions across files and return function-level matches.
+    /// Each function is treated as a separate unit for fingerprinting and comparison.
+    pub fn compare_functions(&self, files: &[SourceFile]) -> Vec<FunctionMatch> {
+        use crate::core::types::{FunctionMatch, FunctionSnippet};
+
+        let mut all_functions: Vec<(String, FunctionSnippet)> = Vec::new();
+
+        // Step 1: Extract all functions from all files
+        for file in files {
+            let funcs = crate::fingerprint::ast::extract_functions(&file.content, file.language);
+            for func in funcs {
+                all_functions.push((file.path.clone(), func));
+            }
+        }
+
+        if all_functions.is_empty() {
+            return Vec::new();
+        }
+
+        // Step 2: Generate fingerprints for each function
+        let mut func_fps: Vec<(String, &FunctionSnippet, CodeFingerprint)> = Vec::new();
+        for (file_path, func) in &all_functions {
+            let fp = CodeFingerprint {
+                file_path: file_path.clone(),
+                winnowing_hashes: winnowing::generate_fingerprints(
+                    &func.content, func.language,
+                    self.config.k_gram_size, self.config.window_size,
+                ),
+                fingerprint_lines: winnowing::generate_fingerprints_with_lines(
+                    &func.content, func.language,
+                    self.config.k_gram_size, self.config.window_size,
+                ),
+                all_kgraph_lines: winnowing::generate_all_kgraph_lines(
+                    &func.content, func.language,
+                    self.config.k_gram_size,
+                ),
+                ast_hashes: ast::generate_ast_hashes(&func.content, func.language)
+                    .unwrap_or_default(),
+                token_count: func.content.lines().count(),
+                language: func.language,
+            };
+            func_fps.push((file_path.clone(), func, fp));
+        }
+
+        // Step 3: Compare all function pairs
+        let mut results: Vec<FunctionMatch> = Vec::new();
+        for i in 0..func_fps.len() {
+            for j in (i + 1)..func_fps.len() {
+                let (file_a, func_a, fp_a) = &func_fps[i];
+                let (file_b, func_b, fp_b) = &func_fps[j];
+
+                // Skip same file or different languages
+                if fp_a.language != fp_b.language {
+                    continue;
+                }
+
+                let winnowing_score = winnowing::jaccard_similarity(
+                    &fp_a.winnowing_hashes, &fp_b.winnowing_hashes,
+                );
+                let ast_score = ast::ast_jaccard_similarity(
+                    &fp_a.ast_hashes, &fp_b.ast_hashes,
+                );
+                let similarity_score = if fp_a.ast_hashes.is_empty() {
+                    winnowing_score
+                } else {
+                    0.4 * winnowing_score + 0.6 * ast_score
+                };
+
+                if similarity_score >= self.config.threshold {
+                    results.push(FunctionMatch {
+                        func_a: func_a.name.clone(),
+                        file_a: file_a.clone(),
+                        lines_a: (func_a.start_line, func_a.end_line),
+                        func_b: func_b.name.clone(),
+                        file_b: file_b.clone(),
+                        lines_b: (func_b.start_line, func_b.end_line),
+                        similarity_score,
+                        winnowing_score,
+                        ast_score,
+                    });
+                }
+            }
+        }
+
+        // Sort by similarity descending
+        results.sort_by(|a, b| {
+            b.similarity_score
+                .partial_cmp(&a.similarity_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        results
+    }
 }
 
-/// Find matching code chunks between two fingerprints by intersecting
-/// their winnowing fingerprint sets, expanding each match point to a
-/// surrounding window of lines, and grouping overlapping windows into chunks.
+/// Find matching code chunks between two fingerprints.
+///
+/// Uses a voting mechanism: each matching k-gram hash "votes" for an offset
+/// (line_b - line_a). The offset with the most votes identifies the likely
+/// aligned code block, even when functions are reordered.
 fn find_matching_chunks(
     fp_a: &CodeFingerprint,
     fp_b: &CodeFingerprint,
 ) -> Vec<ChunkMatch> {
     use crate::core::types::ChunkMatch;
+    use std::collections::HashMap;
 
-    const EXPAND_LINES: usize = 3; // lines to expand around each match point
-
-    // Build a map from hash → lines in file B
-    let mut hash_to_lines_b: std::collections::HashMap<u32, Vec<usize>> =
-        std::collections::HashMap::new();
-    for &(hash, line) in &fp_b.fingerprint_lines {
+    // Build hash → lines map for file B
+    let mut hash_to_lines_b: HashMap<u32, Vec<usize>> = HashMap::new();
+    for &(hash, line) in &fp_b.all_kgraph_lines {
         hash_to_lines_b.entry(hash).or_default().push(line);
     }
 
-    // Collect all matching line ranges (expanded around each match)
-    let mut ranges: Vec<(usize, usize, usize, usize)> = Vec::new(); // (a_start, a_end, b_start, b_end)
+    // Voting: each matching hash votes for ALL (line_b - line_a) offsets
+    let mut offset_votes: HashMap<i64, usize> = HashMap::new();
+    let mut offset_pairs: HashMap<i64, Vec<(usize, usize)>> = HashMap::new();
 
-    for &(hash, line_a) in &fp_a.fingerprint_lines {
+    for &(hash, line_a) in &fp_a.all_kgraph_lines {
         if let Some(lines_b) = hash_to_lines_b.get(&hash) {
             for &line_b in lines_b {
-                let a_start = line_a.saturating_sub(EXPAND_LINES);
-                let b_start = line_b.saturating_sub(EXPAND_LINES);
-                ranges.push((
-                    a_start.max(1),
-                    line_a + EXPAND_LINES,
-                    b_start.max(1),
-                    line_b + EXPAND_LINES,
-                ));
+                let offset = line_b as i64 - line_a as i64;
+                *offset_votes.entry(offset).or_default() += 1;
+                offset_pairs.entry(offset).or_default().push((line_a, line_b));
             }
         }
     }
 
-    if ranges.is_empty() {
+    if offset_votes.is_empty() {
         return Vec::new();
     }
 
-    // Sort by line_a start
-    ranges.sort_by_key(|(sa, _, _, _)| *sa);
-    ranges.dedup();
+    // Pick the best offsets (most votes). Keep top 5.
+    let mut ranked_offsets: Vec<(i64, usize)> = offset_votes.into_iter().collect();
+    ranked_offsets.sort_by_key(|(_, v)| std::cmp::Reverse(*v));
 
-    // Merge overlapping ranges into chunks
+    // Debug: print vote counts (can be removed later)
+    ranked_offsets.truncate(5);
+
+    let min_votes: usize = 2;
+    let expand: usize = 3; // context lines after the matched region
+
     let mut chunks: Vec<ChunkMatch> = Vec::new();
-    let mut merged: Option<(usize, usize, usize, usize)> = None;
 
-    for &(sa, ea, sb, eb) in &ranges {
-        match merged {
-            None => merged = Some((sa, ea, sb, eb)),
-            Some((ms, me, mb_start, mb_end)) => {
-                // Merge if ranges overlap in file A
-                if sa <= me + 2 {
-                    merged = Some((
-                        ms.min(sa),
-                        me.max(ea),
-                        mb_start.min(sb),
-                        mb_end.max(eb),
-                    ));
-                } else {
-                    // Output current merged chunk
-                    let score = if me > ms && mb_end > mb_start {
-                        let size_a = me - ms;
-                        let size_b = mb_end - mb_start;
-                        1.0 - (size_a.abs_diff(size_b) as f64 / size_a.max(size_b) as f64)
+    for &(offset, votes) in &ranked_offsets {
+        if votes < min_votes {
+            continue;
+        }
+
+        let pairs = match offset_pairs.get(&offset) {
+            Some(p) => p,
+            None => continue,
+        };
+
+        let mut sorted = pairs.clone();
+        sorted.sort_by_key(|(a, _)| *a);
+        sorted.dedup();
+
+        // Group consecutive line_a into sub-chunks
+        let mut sub_start: Option<(usize, usize, usize, usize)> = None;
+        for &(la, lb) in &sorted {
+            match sub_start {
+                None => sub_start = Some((la, la, lb, lb)),
+                Some((sa, ea, sb, eb)) => {
+                    if la <= ea + 2 && (lb as i64 - sb as i64).abs() as usize <= eb - sb + 3 {
+                        sub_start = Some((sa, la, sb.min(lb), eb.max(lb)));
                     } else {
-                        1.0
-                    };
-                    chunks.push(ChunkMatch {
-                        line_a: ms,
-                        line_end_a: me,
-                        line_b: mb_start,
-                        line_end_b: mb_end,
-                        score,
-                    });
-                    merged = Some((sa, ea, sb, eb));
+                        chunks.push(ChunkMatch {
+                            line_a: sa,
+                            line_end_a: ea + expand,
+                            line_b: sb,
+                            line_end_b: eb + expand,
+                            score: 0.0, // will be recomputed below
+                        });
+                        sub_start = Some((la, la, lb, lb));
+                    }
                 }
             }
         }
+        if let Some((sa, ea, sb, eb)) = sub_start {
+            chunks.push(ChunkMatch {
+                line_a: sa,
+                line_end_a: ea + expand,
+                line_b: sb,
+                line_end_b: eb + expand,
+                score: 0.0, // will be recomputed below
+            });
+        }
     }
 
-    // Close last chunk
-    if let Some((ms, me, mb_start, mb_end)) = merged {
-        let score = if me > ms && mb_end > mb_start {
-            let size_a = me - ms;
-            let size_b = mb_end - mb_start;
-            1.0 - (size_a.abs_diff(size_b) as f64 / size_a.max(size_b) as f64)
+    // Compute actual similarity score for each chunk
+    for chunk in &mut chunks {
+        let hashes_a: std::collections::HashSet<u32> = fp_a.all_kgraph_lines
+            .iter()
+            .filter(|(_, l)| *l >= chunk.line_a && *l <= chunk.line_end_a)
+            .map(|(h, _)| *h)
+            .collect();
+        let hashes_b: std::collections::HashSet<u32> = fp_b.all_kgraph_lines
+            .iter()
+            .filter(|(_, l)| *l >= chunk.line_b && *l <= chunk.line_end_b)
+            .map(|(h, _)| *h)
+            .collect();
+
+        let intersection = hashes_a.intersection(&hashes_b).count();
+        let union = hashes_a.len() + hashes_b.len() - intersection;
+        chunk.score = if union > 0 {
+            intersection as f64 / union as f64
         } else {
-            1.0
+            0.0
         };
-        chunks.push(ChunkMatch {
-            line_a: ms,
-            line_end_a: me,
-            line_b: mb_start,
-            line_end_b: mb_end,
-            score,
-        });
     }
 
     // Sort by score descending, then by size
@@ -325,7 +449,11 @@ fn find_matching_chunks(
             .then_with(|| (b.line_end_a - b.line_a).cmp(&(a.line_end_a - a.line_a)))
     });
 
-    // Keep top 5 chunks
+    // Deduplicate by line range
+    chunks.dedup_by(|a, b| {
+        a.line_a == b.line_a && a.line_end_a == b.line_end_a
+            && a.line_b == b.line_b && a.line_end_b == b.line_end_b
+    });
     chunks.truncate(5);
 
     chunks

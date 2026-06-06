@@ -65,12 +65,52 @@ pub struct CodeFingerprint {
     pub winnowing_hashes: Vec<u32>,
     /// Winnowing fingerprints with line numbers for chunk matching
     pub fingerprint_lines: Vec<(u32, usize)>,
+    /// ALL k-gram hashes with line numbers (dense, for accurate chunk matching)
+    pub all_kgraph_lines: Vec<(u32, usize)>,
     /// AST subtree structural hashes
     pub ast_hashes: Vec<u64>,
     /// Token count (for normalization)
     pub token_count: usize,
     /// Language of the file
     pub language: Language,
+}
+
+/// A code snippet extracted from a source file (e.g., a function).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionSnippet {
+    /// Function name
+    pub name: String,
+    /// Source code of the function
+    pub content: String,
+    /// Start line in the source file (1-based)
+    pub start_line: usize,
+    /// End line in the source file (1-based)
+    pub end_line: usize,
+    /// Language of the function
+    pub language: Language,
+}
+
+/// Result of comparing two functions
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionMatch {
+    /// Function name in file A
+    pub func_a: String,
+    /// File path of A
+    pub file_a: String,
+    /// Line range in file A
+    pub lines_a: (usize, usize),
+    /// Function name in file B
+    pub func_b: String,
+    /// File path of B
+    pub file_b: String,
+    /// Line range in file B
+    pub lines_b: (usize, usize),
+    /// Similarity score [0.0, 1.0]
+    pub similarity_score: f64,
+    /// Winnowing-based similarity
+    pub winnowing_score: f64,
+    /// AST-based similarity
+    pub ast_score: f64,
 }
 
 /// A matched chunk of code between two files

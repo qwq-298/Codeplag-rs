@@ -42,13 +42,17 @@ pub fn tokenize(source: &str, _language: Language) -> Vec<Token> {
                     line: start_line,
                 });
             }
-            ' ' | '\t' | '\r' => {
+            ' ' | '\t' => {
                 let ws: String = chars.by_ref().take_while(|c| c.is_whitespace() && *c != '\n').collect();
                 tokens.push(Token {
                     kind: TokenKind::Whitespace,
                     text: ws,
                     line: start_line,
                 });
+            }
+            '\r' => {
+                // Skip carriage return — line endings are already normalized to \n
+                chars.next();
             }
             '/' => {
                 chars.next();
@@ -155,16 +159,10 @@ fn is_keyword(word: &str) -> bool {
 /// Uses token text for keywords/operators (to distinguish different constructs)
 /// and a placeholder for identifiers (to maintain renaming resistance).
 pub fn compute_k_gram_hashes(tokens: &[Token], k: usize) -> Vec<u32> {
-    if tokens.len() < k {
-        return Vec::new();
-    }
-
-    // Generate a representative byte for each token:
-    // - Keywords/operators/punctuation: use actual text hash (distinguishes `if` from `while`)
-    // - Identifiers: use constant 0xFF byte (renaming resistant)
-    // - Literals/numbers: use kind as-is (same literals produce same hash)
-    let token_bytes: Vec<u8> = tokens
+    // Filter out whitespace and comments — they cause false matches across blank lines
+    let meaningful: Vec<u8> = tokens
         .iter()
+        .filter(|t| t.kind != TokenKind::Whitespace && t.kind != TokenKind::Comment)
         .map(|t| match t.kind {
             TokenKind::Keyword | TokenKind::Operator | TokenKind::Punctuation => {
                 // Hash the actual text to distinguish different keywords/operators
@@ -173,15 +171,18 @@ pub fn compute_k_gram_hashes(tokens: &[Token], k: usize) -> Vec<u32> {
                 h.finalize()[0]
             }
             TokenKind::Identifier => 0xFF, // placeholder: all identifiers look the same
-            TokenKind::Comment | TokenKind::Whitespace => 0x00, // ignore whitespace/comments
             _ => t.kind as u8, // numbers, strings, etc.
         })
         .collect();
 
-    let mut hashes = Vec::with_capacity(token_bytes.len().saturating_sub(k - 1));
+    if meaningful.len() < k {
+        return Vec::new();
+    }
+
+    let mut hashes = Vec::with_capacity(meaningful.len().saturating_sub(k - 1));
     let mut hasher = Sha256::new();
 
-    for window in token_bytes.windows(k) {
+    for window in meaningful.windows(k) {
         hasher.update(window);
         let hash = u32::from_be_bytes(hasher.finalize_reset()[..4].try_into().unwrap());
         hashes.push(hash);
@@ -247,29 +248,49 @@ pub fn generate_fingerprints_with_lines(
         .collect()
 }
 
+/// Generate ALL k-gram hashes with line numbers (dense — for accurate chunk matching).
+/// Returns (hash, line_number) for every k-gram in the file.
+pub fn generate_all_kgraph_lines(
+    source: &str,
+    language: Language,
+    k: usize,
+) -> Vec<(u32, usize)> {
+    let tokens = tokenize(source, language);
+    let (hashes, line_map) = compute_k_gram_hashes_with_lines(&tokens, k);
+    hashes.into_iter().zip(line_map.into_iter()).collect()
+}
+
 /// Compute k-gram hashes with line number tracking.
 /// Returns (hashes, line_numbers) where line_numbers[i] is the line of the first token in k-gram i.
+/// Whitespace and comment tokens are skipped entirely to avoid matching blank lines.
 fn compute_k_gram_hashes_with_lines(tokens: &[Token], k: usize) -> (Vec<u32>, Vec<usize>) {
     let mut hashes = Vec::new();
     let mut line_map = Vec::new();
 
-    if tokens.len() < k {
+    // Filter out whitespace and comments — they cause false matches across blank lines
+    let meaningful: Vec<(u8, usize)> = tokens
+        .iter()
+        .filter(|t| t.kind != TokenKind::Whitespace && t.kind != TokenKind::Comment)
+        .map(|t| {
+            let byte = match t.kind {
+                TokenKind::Keyword | TokenKind::Operator | TokenKind::Punctuation => {
+                    let mut h = Sha256::new();
+                    h.update(t.text.as_bytes());
+                    h.finalize()[0]
+                }
+                TokenKind::Identifier => 0xFF,
+                _ => t.kind as u8,
+            };
+            (byte, t.line)
+        })
+        .collect();
+
+    if meaningful.len() < k {
         return (hashes, line_map);
     }
 
-    let token_bytes: Vec<u8> = tokens
-        .iter()
-        .map(|t| match t.kind {
-            TokenKind::Keyword | TokenKind::Operator | TokenKind::Punctuation => {
-                let mut h = Sha256::new();
-                h.update(t.text.as_bytes());
-                h.finalize()[0]
-            }
-            TokenKind::Identifier => 0xFF,
-            TokenKind::Comment | TokenKind::Whitespace => 0x00,
-            _ => t.kind as u8,
-        })
-        .collect();
+    let token_bytes: Vec<u8> = meaningful.iter().map(|(b, _)| *b).collect();
+    let token_lines: Vec<usize> = meaningful.iter().map(|(_, l)| *l).collect();
 
     let mut hasher = Sha256::new();
     hashes.reserve(token_bytes.len().saturating_sub(k - 1));
@@ -280,8 +301,8 @@ fn compute_k_gram_hashes_with_lines(tokens: &[Token], k: usize) -> (Vec<u32>, Ve
         hasher.update(window);
         let hash = u32::from_be_bytes(hasher.finalize_reset()[..4].try_into().unwrap());
         hashes.push(hash);
-        // Line of the first token in this k-gram
-        line_map.push(tokens[i].line);
+        // Line of the first meaningful token in this k-gram
+        line_map.push(token_lines[i]);
     }
 
     (hashes, line_map)

@@ -35,12 +35,18 @@ fn main() {
 
             println!("Found {} source files in {}", files.len(), path);
 
-            let mut engine = SimilarityEngine::new(config);
-            engine.index_files(&files);
-            let results = engine.compare_all();
+            if cli.functions {
+                let engine = SimilarityEngine::new(config);
+                let func_results = engine.compare_functions(&files);
+                print_function_results(&func_results, output);
+            } else {
+                let mut engine = SimilarityEngine::new(config);
+                engine.index_files(&files);
+                let results = engine.compare_all();
 
-            let file_refs: Vec<&codeplag::core::types::SourceFile> = files.iter().collect();
-            print_results_with_files(&results, output, &file_refs);
+                let file_refs: Vec<&codeplag::core::types::SourceFile> = files.iter().collect();
+                print_results_with_files(&results, output, &file_refs);
+            }
         }
 
         Commands::Compare { file, against, output } => {
@@ -77,14 +83,28 @@ fn main() {
                 );
             }
 
-            let mut engine = SimilarityEngine::new(config);
-            engine.index_files(&against_files);
-            let results = engine.compare_against(&target_files[0]);
+            if cli.functions {
+                // Function-level: merge target + against and compare all functions
+                let all_files: Vec<codeplag::core::types::SourceFile> =
+                    target_files.iter().chain(against_files.iter()).cloned().collect();
+                let engine = SimilarityEngine::new(config);
+                let func_results = engine.compare_functions(&all_files);
+                // Filter to only target vs against (not against vs against)
+                let filtered: Vec<_> = func_results.into_iter()
+                    .filter(|r| {
+                        r.file_a == target_files[0].path || r.file_b == target_files[0].path 
+                    })
+                    .collect();
+                print_function_results(&filtered, output);
+            } else {
+                let mut engine = SimilarityEngine::new(config);
+                engine.index_files(&against_files);
+                let results = engine.compare_against(&target_files[0]);
 
-            // Merge target + against for content lookup in chunk display
-            let all_files: Vec<&codeplag::core::types::SourceFile> =
-                target_files.iter().chain(against_files.iter()).collect();
-            print_results_with_files(&results, output, &all_files);
+                let all_files: Vec<&codeplag::core::types::SourceFile> =
+                    target_files.iter().chain(against_files.iter()).collect();
+                print_results_with_files(&results, output, &all_files);
+            }
         }
 
         Commands::Fetch { repo, output } => {
@@ -207,6 +227,45 @@ fn print_chunks(
             );
 
             println!("   {:<54}  {}", left, right);
+        }
+    }
+}
+
+/// Display function-level comparison results
+fn print_function_results(
+    results: &[codeplag::core::types::FunctionMatch],
+    format: &str,
+) {
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(results)
+                .unwrap_or_else(|e| format!("Error serializing: {}", e));
+            println!("{}", json);
+        }
+        _ => {
+            if results.is_empty() {
+                println!("\nNo similar functions found.");
+                return;
+            }
+
+            println!("\n=== Function-Level Similarity Results ===\n");
+            for (i, r) in results.iter().enumerate() {
+                println!(
+                    "{}: {}() [{}:{}-{}] ↔ {}() [{}:{}-{}]",
+                    i + 1,
+                    r.func_a, r.file_a, r.lines_a.0, r.lines_a.1,
+                    r.func_b, r.file_b, r.lines_b.0, r.lines_b.1,
+                );
+                println!(
+                    "   Overall:  {:.1}%  |  Winnowing: {:.1}%  |  AST: {:.1}%",
+                    r.similarity_score * 100.0,
+                    r.winnowing_score * 100.0,
+                    r.ast_score * 100.0,
+                );
+                println!();
+            }
+
+            println!("Found {} similar function pairs.", results.len());
         }
     }
 }

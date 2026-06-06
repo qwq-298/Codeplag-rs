@@ -23,6 +23,10 @@ pub struct Cli {
     /// Enable verbose output
     #[arg(short, long)]
     pub verbose: bool,
+
+    /// Compare at function level (extract and compare individual functions)
+    #[arg(long)]
+    pub functions: bool,
 }
 
 #[derive(Subcommand, Debug)]
