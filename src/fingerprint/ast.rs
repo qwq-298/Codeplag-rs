@@ -177,6 +177,131 @@ fn collect_function_nodes(
     }
 }
 
+/// Generate CFG fingerprint hashes for a source file.
+///
+/// Walks the AST to extract control flow structure, producing a set
+/// of structural hashes that represent the control flow graph.
+/// This captures the logical flow of the program independent of
+/// variable names and exact syntax.
+pub fn generate_cfg_hashes(source: &str, language: Language) -> Vec<u64> {
+    let ts_lang = match language.tree_sitter_language() {
+        Some(l) => l,
+        None => return Vec::new(),
+    };
+
+    let mut parser = Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return Vec::new();
+    }
+
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    let root = tree.root_node();
+
+    // Collect control flow node sequences
+    let mut patterns = Vec::new();
+    collect_cfg_patterns(&root, &mut patterns);
+
+    // Hash each pattern into a u64
+    let mut hashes: Vec<u64> = patterns
+        .iter()
+        .map(|p| {
+            let mut h = Sha256::new();
+            h.update(p.as_bytes());
+            u64::from_be_bytes(h.finalize()[..8].try_into().unwrap())
+        })
+        .collect();
+
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+}
+
+/// Control flow node kinds that create branches/jumps
+fn is_control_flow(kind: &str) -> bool {
+    matches!(
+        kind,
+        "if_statement" | "if_expression"
+            | "while_statement" | "while_expression"
+            | "for_statement" | "for_expression"
+            | "loop_statement" | "loop_expression"
+            | "match_statement" | "match_expression"
+            | "return_statement" | "return_expression"
+            | "break_statement" | "continue_statement"
+            | "try_statement" | "throw_statement"
+            | "switch_statement" | "case_statement"
+            | "function_item" | "function_definition"
+            | "function_declaration" | "arrow_function"
+            | "method_definition"
+    )
+}
+
+/// Recursively collect CFG patterns: for each control-flow node,
+/// record the pattern "parent_kind -> child_kind" and recurse.
+fn collect_cfg_patterns(node: &Node, patterns: &mut Vec<String>) {
+    let kind = node.kind().to_string();
+
+    if is_control_flow(&kind) {
+        // Record the control flow structure
+        let mut children_kinds = Vec::new();
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                let ck = child.kind();
+                if ck != "{" && ck != "}" && ck != "(" && ck != ")" {
+                    children_kinds.push(ck.to_string());
+                }
+            }
+        }
+        if !children_kinds.is_empty() {
+            patterns.push(format!("{}[{}]", kind, children_kinds.join(",")));
+        } else {
+            patterns.push(kind.clone());
+        }
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_cfg_patterns(&child, patterns);
+        }
+    }
+}
+
+/// Compute Jaccard similarity between two CFG hash sets
+pub fn cfg_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = count_cfg_intersection(a, b);
+    let union = a.len() + b.len() - intersection;
+    intersection as f64 / union as f64
+}
+
+/// Count elements present in both sorted slices (CFG hashes)
+fn count_cfg_intersection(a: &[u64], b: &[u64]) -> usize {
+    let mut count = 0;
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Equal => {
+                count += 1;
+                i += 1;
+                j += 1;
+            }
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+        }
+    }
+    count
+}
+
 /// Check if a node kind represents a literal value
 fn is_literal_kind(kind: &str) -> bool {
     kind.contains("integer")

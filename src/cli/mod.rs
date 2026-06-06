@@ -67,4 +67,19 @@ pub enum Commands {
         #[arg(short, long, default_value = "text")]
         output: String,
     },
+
+    /// Compare two projects (directories) at the project level
+    Project {
+        /// Path to project A
+        #[arg(short = 'a', long)]
+        project_a: String,
+
+        /// Path to project B
+        #[arg(short = 'b', long)]
+        project_b: String,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        output: String,
+    },
 }

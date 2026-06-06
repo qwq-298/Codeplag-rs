@@ -69,6 +69,10 @@ pub struct CodeFingerprint {
     pub all_kgraph_lines: Vec<(u32, usize)>,
     /// AST subtree structural hashes
     pub ast_hashes: Vec<u64>,
+    /// Token frequency vector for cosine similarity
+    pub token_freq: Vec<f64>,
+    /// CFG (Control Flow Graph) structural hashes
+    pub cfg_hashes: Vec<u64>,
     /// Token count (for normalization)
     pub token_count: usize,
     /// Language of the file
@@ -88,6 +92,30 @@ pub struct FunctionSnippet {
     pub end_line: usize,
     /// Language of the function
     pub language: Language,
+}
+
+/// Result of comparing two projects (directories)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectResult {
+    /// Overall project similarity score [0.0, 1.0]
+    pub project_score: f64,
+    /// Per-file best matches
+    pub file_matches: Vec<ProjectFileMatch>,
+}
+
+/// Best match for a single file in project A against project B
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectFileMatch {
+    /// File path in project A
+    pub file_a: String,
+    /// Best matching file in project B
+    pub file_b: String,
+    /// Similarity score for this pair
+    pub similarity_score: f64,
+    /// Winnowing score
+    pub winnowing_score: f64,
+    /// AST score
+    pub ast_score: f64,
 }
 
 /// Result of comparing two functions

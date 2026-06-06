@@ -124,6 +124,30 @@ fn main() {
             let file_refs: Vec<&codeplag::core::types::SourceFile> = files.iter().collect();
             print_results_with_files(&results, output, &file_refs);
         }
+
+        Commands::Project { project_a, project_b, output } => {
+            let fetcher = GitHubFetcher::new(&work_dir);
+            let files_a = fetcher.collect_local(project_a)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error reading project A: {}", e);
+                    std::process::exit(1);
+                });
+            let files_b = fetcher.collect_local(project_b)
+                .unwrap_or_else(|e| {
+                    eprintln!("Error reading project B: {}", e);
+                    std::process::exit(1);
+                });
+
+            println!(
+                "Comparing project A ({} files) vs project B ({} files)",
+                files_a.len(),
+                files_b.len()
+            );
+
+            let engine = SimilarityEngine::new(config);
+            let result = engine.compare_projects(&files_a, &files_b);
+            print_project_result(&result, output);
+        }
     }
 }
 
@@ -270,11 +294,65 @@ fn print_function_results(
     }
 }
 
-/// Truncate a string to max_width, adding "…" if cut
+/// Display project-level comparison results
+fn print_project_result(
+    result: &codeplag::core::types::ProjectResult,
+    format: &str,
+) {
+    match format {
+        "json" => {
+            let json = serde_json::to_string_pretty(result)
+                .unwrap_or_else(|e| format!("Error serializing: {}", e));
+            println!("{}", json);
+        }
+        _ => {
+            if result.file_matches.is_empty() {
+                println!("\nNo similar files found between the two projects.");
+                return;
+            }
+
+            println!("\n=== Project Comparison Results ===\n");
+
+            for (i, m) in result.file_matches.iter().enumerate() {
+                println!(
+                    "{:>3}. {: <40} ↔ {}",
+                    i + 1,
+                    m.file_a,
+                    m.file_b,
+                );
+                println!(
+                    "      {:.1}%  |  Winnowing: {:.1}%  |  AST: {:.1}%",
+                    m.similarity_score * 100.0,
+                    m.winnowing_score * 100.0,
+                    m.ast_score * 100.0,
+                );
+                println!();
+            }
+
+            println!(
+                "─────────────────────────────────────────────"
+            );
+            println!(
+                "  Project Similarity: {:.1}%  (avg of {} file matches)",
+                result.project_score * 100.0,
+                result.file_matches.len(),
+            );
+        }
+    }
+}
+
+/// Truncate a string to max_width chars, adding "…" if cut.
+/// Uses char boundaries to avoid panics with multi-byte UTF-8.
 fn truncate(s: &str, max_width: usize) -> String {
-    if s.len() <= max_width {
+    if s.chars().count() <= max_width {
         format!("{: <max_width$}", s, max_width = max_width)
     } else {
-        format!("{}…", &s[..max_width - 1])
+        // Find byte offset of the (max_width - 1)-th char
+        let byte_end = s
+            .char_indices()
+            .nth(max_width - 1)
+            .map(|(idx, _)| idx)
+            .unwrap_or(s.len());
+        format!("{}…", &s[..byte_end])
     }
 }

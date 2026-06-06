@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::core::types::{
     AnalyzerConfig, ChunkMatch, CodeFingerprint, FunctionMatch,
-    SimilarityResult, SourceFile,
+    Language, ProjectResult, SimilarityResult, SourceFile,
 };
 use crate::fingerprint::winnowing;
 use crate::fingerprint::ast;
@@ -41,6 +41,9 @@ impl SimilarityEngine {
 
             let token_count = file.content.lines().count();
 
+            // Compute token frequency vector
+            let token_freq = winnowing::compute_token_frequency(&file.content, file.language);
+
             // Generate winnowing fingerprints
             let winnowing_hashes = winnowing::generate_fingerprints(
                 &file.content,
@@ -68,12 +71,17 @@ impl SimilarityEngine {
             let ast_hashes = ast::generate_ast_hashes(&file.content, file.language)
                 .unwrap_or_default();
 
+            // Generate CFG fingerprints
+            let cfg_hashes = ast::generate_cfg_hashes(&file.content, file.language);
+
             let fingerprint = CodeFingerprint {
                 file_path: file.path.clone(),
                 winnowing_hashes,
                 fingerprint_lines,
                 all_kgraph_lines,
                 ast_hashes,
+                token_freq,
+                cfg_hashes,
                 token_count,
                 language: file.language,
             };
@@ -88,19 +96,26 @@ impl SimilarityEngine {
         );
     }
 
-    /// Compare all indexed files against each other
+    /// Compare all indexed files against each other (parallel)
     pub fn compare_all(&self) -> Vec<SimilarityResult> {
-        let paths: Vec<&String> = self.fingerprints.keys().collect();
-        let mut results = Vec::new();
+        use rayon::prelude::*;
 
-        for i in 0..paths.len() {
-            for j in (i + 1)..paths.len() {
+        let paths: Vec<&String> = self.fingerprints.keys().collect();
+        let n = paths.len();
+
+        // Build all index pairs (i, j) where i < j
+        let pairs: Vec<(usize, usize)> = (0..n)
+            .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
+            .collect();
+
+        let mut results: Vec<SimilarityResult> = pairs
+            .par_iter()
+            .filter_map(|&(i, j)| {
                 let fp_a = &self.fingerprints[paths[i]];
                 let fp_b = &self.fingerprints[paths[j]];
 
-                // Only compare files of the same language
                 if fp_a.language != fp_b.language {
-                    continue;
+                    return None;
                 }
 
                 let winnowing_score = winnowing::jaccard_similarity(
@@ -113,30 +128,34 @@ impl SimilarityEngine {
                     &fp_b.ast_hashes,
                 );
 
-                // Combined similarity: weighted average
+                let token_sim = winnowing::token_cosine_similarity(
+                    &fp_a.token_freq, &fp_b.token_freq,
+                );
+                let cfg_sim = ast::cfg_jaccard_similarity(&fp_a.cfg_hashes, &fp_b.cfg_hashes);
+
                 let similarity_score = if fp_a.ast_hashes.is_empty() {
-                    // Fallback to winnowing only if AST parsing failed
-                    winnowing_score
+                    0.4 * winnowing_score + 0.4 * token_sim + 0.2 * cfg_sim
                 } else {
-                    // 40% winnowing + 60% AST (AST is more reliable)
-                    0.4 * winnowing_score + 0.6 * ast_score
+                    0.25 * winnowing_score + 0.3 * ast_score
+                        + 0.25 * token_sim + 0.2 * cfg_sim
                 };
 
                 if similarity_score >= self.config.threshold {
                     let matched_chunks = find_matching_chunks(fp_a, fp_b);
-                    results.push(SimilarityResult {
+                    Some(SimilarityResult {
                         file_a: fp_a.file_path.clone(),
                         file_b: fp_b.file_path.clone(),
                         similarity_score,
                         winnowing_score,
                         ast_score,
                         matched_chunks,
-                    });
+                    })
+                } else {
+                    None
                 }
-            }
-        }
+            })
+            .collect();
 
-        // Sort by similarity score descending
         results.sort_by(|a, b| {
             b.similarity_score
                 .partial_cmp(&a.similarity_score)
@@ -147,18 +166,13 @@ impl SimilarityEngine {
         results
     }
 
-    /// Compare a single target file against all indexed files
+    /// Compare a single target file against all indexed files (parallel)
     pub fn compare_against(&self, target: &SourceFile) -> Vec<SimilarityResult> {
+        use rayon::prelude::*;
+
         if target.language == crate::core::types::Language::Unknown {
             return Vec::new();
         }
-
-        let fingerprint_lines = winnowing::generate_fingerprints_with_lines(
-            &target.content,
-            target.language,
-            self.config.k_gram_size,
-            self.config.window_size,
-        );
 
         let target_fp = CodeFingerprint {
             file_path: target.path.clone(),
@@ -168,7 +182,12 @@ impl SimilarityEngine {
                 self.config.k_gram_size,
                 self.config.window_size,
             ),
-            fingerprint_lines,
+            fingerprint_lines: winnowing::generate_fingerprints_with_lines(
+                &target.content,
+                target.language,
+                self.config.k_gram_size,
+                self.config.window_size,
+            ),
             all_kgraph_lines: winnowing::generate_all_kgraph_lines(
                 &target.content,
                 target.language,
@@ -176,45 +195,57 @@ impl SimilarityEngine {
             ),
             ast_hashes: ast::generate_ast_hashes(&target.content, target.language)
                 .unwrap_or_default(),
+            token_freq: winnowing::compute_token_frequency(&target.content, target.language),
+            cfg_hashes: ast::generate_cfg_hashes(&target.content, target.language),
             token_count: target.content.lines().count(),
             language: target.language,
         };
 
-        let mut results = Vec::new();
+        let mut results: Vec<SimilarityResult> = self
+            .fingerprints
+            .par_iter()
+            .filter_map(|(path, fp)| {
+                if fp.language != target_fp.language {
+                    return None;
+                }
 
-        for (path, fp) in &self.fingerprints {
-            if fp.language != target_fp.language {
-                continue;
-            }
+                let winnowing_score = winnowing::jaccard_similarity(
+                    &target_fp.winnowing_hashes,
+                    &fp.winnowing_hashes,
+                );
 
-            let winnowing_score = winnowing::jaccard_similarity(
-                &target_fp.winnowing_hashes,
-                &fp.winnowing_hashes,
-            );
+                let ast_score = ast::ast_jaccard_similarity(
+                    &target_fp.ast_hashes,
+                    &fp.ast_hashes,
+                );
 
-            let ast_score = ast::ast_jaccard_similarity(
-                &target_fp.ast_hashes,
-                &fp.ast_hashes,
-            );
+                let token_sim = winnowing::token_cosine_similarity(
+                    &target_fp.token_freq, &fp.token_freq,
+                );
+                let cfg_sim = ast::cfg_jaccard_similarity(&target_fp.cfg_hashes, &fp.cfg_hashes);
 
-            let similarity_score = if target_fp.ast_hashes.is_empty() {
-                winnowing_score
-            } else {
-                0.4 * winnowing_score + 0.6 * ast_score
-            };
+                let similarity_score = if target_fp.ast_hashes.is_empty() {
+                    0.4 * winnowing_score + 0.4 * token_sim + 0.2 * cfg_sim
+                } else {
+                    0.25 * winnowing_score + 0.3 * ast_score
+                        + 0.25 * token_sim + 0.2 * cfg_sim
+                };
 
-            if similarity_score >= self.config.threshold {
-                let matched_chunks = find_matching_chunks(&target_fp, fp);
-                results.push(SimilarityResult {
-                    file_a: target.path.clone(),
-                    file_b: path.clone(),
-                    similarity_score,
-                    winnowing_score,
-                    ast_score,
-                    matched_chunks,
-                });
-            }
-        }
+                if similarity_score >= self.config.threshold {
+                    let matched_chunks = find_matching_chunks(&target_fp, fp);
+                    Some(SimilarityResult {
+                        file_a: target.path.clone(),
+                        file_b: path.clone(),
+                        similarity_score,
+                        winnowing_score,
+                        ast_score,
+                        matched_chunks,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         results.sort_by(|a, b| {
             b.similarity_score
@@ -228,6 +259,122 @@ impl SimilarityEngine {
     /// Get the number of indexed files
     pub fn indexed_count(&self) -> usize {
         self.fingerprints.len()
+    }
+
+    /// Compare two projects (directories) at the project level (parallel).
+    ///
+    /// For each file in project_a, finds the best matching file in project_b
+    /// (same language only). The project score is the average of these best matches.
+    pub fn compare_projects(
+        &self,
+        project_a: &[SourceFile],
+        project_b: &[SourceFile],
+    ) -> ProjectResult {
+        use rayon::prelude::*;
+        use crate::core::types::{ProjectFileMatch, ProjectResult};
+
+        let mut file_matches: Vec<ProjectFileMatch> = project_a
+            .par_iter()
+            .filter_map(|file_a| {
+                if file_a.language == Language::Unknown {
+                    return None;
+                }
+
+                // Generate fingerprint for file A
+                let fp_a = CodeFingerprint {
+                    file_path: file_a.path.clone(),
+                    winnowing_hashes: winnowing::generate_fingerprints(
+                        &file_a.content, file_a.language,
+                        self.config.k_gram_size, self.config.window_size,
+                    ),
+                    fingerprint_lines: Vec::new(),
+                    all_kgraph_lines: Vec::new(),
+                    ast_hashes: ast::generate_ast_hashes(&file_a.content, file_a.language)
+                        .unwrap_or_default(),
+                    token_freq: winnowing::compute_token_frequency(&file_a.content, file_a.language),
+                    cfg_hashes: ast::generate_cfg_hashes(&file_a.content, file_a.language),
+                    token_count: file_a.content.lines().count(),
+                    language: file_a.language,
+                };
+
+                // Find best match in project B
+                let mut best_score = 0.0;
+                let mut best_winnowing = 0.0;
+                let mut best_ast = 0.0;
+                let mut best_file = String::new();
+
+                for file_b in project_b {
+                    if file_b.language != file_a.language {
+                        continue;
+                    }
+
+                    let fp_b = CodeFingerprint {
+                        file_path: file_b.path.clone(),
+                        winnowing_hashes: winnowing::generate_fingerprints(
+                            &file_b.content, file_b.language,
+                            self.config.k_gram_size, self.config.window_size,
+                        ),
+                        fingerprint_lines: Vec::new(),
+                        all_kgraph_lines: Vec::new(),
+                        ast_hashes: ast::generate_ast_hashes(&file_b.content, file_b.language)
+                            .unwrap_or_default(),
+                        token_freq: winnowing::compute_token_frequency(&file_b.content, file_b.language),
+                        cfg_hashes: ast::generate_cfg_hashes(&file_b.content, file_b.language),
+                        token_count: file_b.content.lines().count(),
+                        language: file_b.language,
+                    };
+
+                    let ws = winnowing::jaccard_similarity(
+                        &fp_a.winnowing_hashes, &fp_b.winnowing_hashes,
+                    );
+                    let as_ = ast::ast_jaccard_similarity(&fp_a.ast_hashes, &fp_b.ast_hashes);
+                    let ts = winnowing::token_cosine_similarity(&fp_a.token_freq, &fp_b.token_freq);
+                    let cs = ast::cfg_jaccard_similarity(&fp_a.cfg_hashes, &fp_b.cfg_hashes);
+                    let sim = if fp_a.ast_hashes.is_empty() {
+                        0.4 * ws + 0.4 * ts + 0.2 * cs
+                    } else {
+                        0.25 * ws + 0.3 * as_ + 0.25 * ts + 0.2 * cs
+                    };
+
+                    if sim > best_score {
+                        best_score = sim;
+                        best_winnowing = ws;
+                        best_ast = as_;
+                        best_file = file_b.path.clone();
+                    }
+                }
+
+                if best_score >= self.config.threshold {
+                    Some(ProjectFileMatch {
+                        file_a: file_a.path.clone(),
+                        file_b: best_file,
+                        similarity_score: best_score,
+                        winnowing_score: best_winnowing,
+                        ast_score: best_ast,
+                    })
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        file_matches.sort_by(|a, b| {
+            b.similarity_score
+                .partial_cmp(&a.similarity_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let project_score = if file_matches.is_empty() {
+            0.0
+        } else {
+            file_matches.iter().map(|m| m.similarity_score).sum::<f64>()
+                / file_matches.len() as f64
+        };
+
+        ProjectResult {
+            project_score,
+            file_matches,
+        }
     }
 
     /// Compare functions across files and return function-level matches.
@@ -268,22 +415,30 @@ impl SimilarityEngine {
                 ),
                 ast_hashes: ast::generate_ast_hashes(&func.content, func.language)
                     .unwrap_or_default(),
+                token_freq: winnowing::compute_token_frequency(&func.content, func.language),
+                cfg_hashes: ast::generate_cfg_hashes(&func.content, func.language),
                 token_count: func.content.lines().count(),
                 language: func.language,
             };
             func_fps.push((file_path.clone(), func, fp));
         }
 
-        // Step 3: Compare all function pairs
-        let mut results: Vec<FunctionMatch> = Vec::new();
-        for i in 0..func_fps.len() {
-            for j in (i + 1)..func_fps.len() {
+        // Step 3: Compare all function pairs (parallel)
+        use rayon::prelude::*;
+
+        let n = func_fps.len();
+        let pairs: Vec<(usize, usize)> = (0..n)
+            .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
+            .collect();
+
+        let mut results: Vec<FunctionMatch> = pairs
+            .par_iter()
+            .filter_map(|&(i, j)| {
                 let (file_a, func_a, fp_a) = &func_fps[i];
                 let (file_b, func_b, fp_b) = &func_fps[j];
 
-                // Skip same file or different languages
                 if fp_a.language != fp_b.language {
-                    continue;
+                    return None;
                 }
 
                 let winnowing_score = winnowing::jaccard_similarity(
@@ -292,14 +447,20 @@ impl SimilarityEngine {
                 let ast_score = ast::ast_jaccard_similarity(
                     &fp_a.ast_hashes, &fp_b.ast_hashes,
                 );
+                let token_sim = winnowing::token_cosine_similarity(
+                    &fp_a.token_freq, &fp_b.token_freq,
+                );
+                let cfg_sim = ast::cfg_jaccard_similarity(&fp_a.cfg_hashes, &fp_b.cfg_hashes);
+
                 let similarity_score = if fp_a.ast_hashes.is_empty() {
-                    winnowing_score
+                    0.4 * winnowing_score + 0.4 * token_sim + 0.2 * cfg_sim
                 } else {
-                    0.4 * winnowing_score + 0.6 * ast_score
+                    0.25 * winnowing_score + 0.3 * ast_score
+                        + 0.25 * token_sim + 0.2 * cfg_sim
                 };
 
                 if similarity_score >= self.config.threshold {
-                    results.push(FunctionMatch {
+                    Some(FunctionMatch {
                         func_a: func_a.name.clone(),
                         file_a: file_a.clone(),
                         lines_a: (func_a.start_line, func_a.end_line),
@@ -309,12 +470,13 @@ impl SimilarityEngine {
                         similarity_score,
                         winnowing_score,
                         ast_score,
-                    });
+                    })
+                } else {
+                    None
                 }
-            }
-        }
+            })
+            .collect();
 
-        // Sort by similarity descending
         results.sort_by(|a, b| {
             b.similarity_score
                 .partial_cmp(&a.similarity_score)

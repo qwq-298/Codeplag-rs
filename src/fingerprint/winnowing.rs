@@ -23,7 +23,95 @@ pub struct Token {
     pub line: usize,
 }
 
-/// Simple language-agnostic lexer that produces token kinds
+/// Strip C-style comments from source code.
+/// Removes `// line comments` and `/* block comments */`.
+fn strip_comments(source: &str) -> String {
+    let mut result = String::with_capacity(source.len());
+    let chars: Vec<char> = source.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '/' && i + 1 < chars.len() {
+            if chars[i + 1] == '/' {
+                // Line comment: skip until newline
+                i += 2;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                // Keep the newline for line tracking
+                if i < chars.len() {
+                    result.push('\n');
+                    i += 1;
+                }
+                continue;
+            } else if chars[i + 1] == '*' {
+                // Block comment: skip until */
+                i += 2;
+                while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '/') {
+                    if chars[i] == '\n' {
+                        result.push('\n');
+                    }
+                    i += 1;
+                }
+                if i + 1 < chars.len() {
+                    i += 2; // skip */
+                }
+                continue;
+            }
+        }
+        result.push(chars[i]);
+        i += 1;
+    }
+    result
+}
+
+/// Normalize whitespace: collapse all whitespace runs into a single space,
+/// then remove spaces around brackets/parens/braces/semicolons for uniform tokenization.
+/// Comments are stripped first to prevent `//` from consuming the entire normalized line.
+pub fn normalize_whitespace(source: &str) -> String {
+    // Step 0: strip comments (must happen before newline removal!)
+    let source = strip_comments(source);
+
+    // Step 1: collapse all whitespace runs to a single space
+    let mut result = String::with_capacity(source.len());
+    let mut in_whitespace = false;
+    for ch in source.chars() {
+        if ch.is_whitespace() {
+            if !in_whitespace {
+                result.push(' ');
+                in_whitespace = true;
+            }
+        } else {
+            result.push(ch);
+            in_whitespace = false;
+        }
+    }
+    // Step 2: strip spaces around brackets/parens/braces/semicolons/commas/dots/colons
+    let brackets = ['(', ')', '[', ']', '{', '}', ';', ',', '.', ':'];
+    let mut cleaned = String::with_capacity(result.len());
+    let chars: Vec<char> = result.chars().collect();
+    for i in 0..chars.len() {
+        if chars[i] == ' ' {
+            let prev = if i > 0 { chars[i - 1] } else { ' ' };
+            let next = if i + 1 < chars.len() { chars[i + 1] } else { ' ' };
+            let prev_is_id = prev.is_alphanumeric() || prev == '_';
+            let next_is_id = next.is_alphanumeric() || next == '_';
+            let prev_is_bracket = brackets.contains(&prev);
+            let next_is_bracket = brackets.contains(&next);
+            if prev_is_id && next_is_id {
+                cleaned.push(' ');
+            } else if !prev_is_bracket && !next_is_bracket {
+                cleaned.push(' ');
+            }
+        } else {
+            cleaned.push(chars[i]);
+        }
+    }
+    cleaned.trim().to_string()
+}
+
+/// Simple language-agnostic lexer that produces token kinds.
+/// The source should be normalized with `normalize_whitespace` first
+/// for format-independent results.
 pub fn tokenize(source: &str, _language: Language) -> Vec<Token> {
     let mut tokens = Vec::new();
     let mut chars = source.chars().peekable();
@@ -224,9 +312,11 @@ pub fn winnow(hashes: &[u32], window_size: usize) -> Vec<u32> {
     fingerprints
 }
 
-/// Generate winnowing fingerprints for source code
+/// Generate winnowing fingerprints for source code.
+/// Normalizes whitespace first for format-independent results.
 pub fn generate_fingerprints(source: &str, language: Language, k: usize, w: usize) -> Vec<u32> {
-    let tokens = tokenize(source, language);
+    let normalized = normalize_whitespace(source);
+    let tokens = tokenize(&normalized, language);
     let hashes = compute_k_gram_hashes(&tokens, k);
     winnow(&hashes, w)
 }
@@ -258,6 +348,57 @@ pub fn generate_all_kgraph_lines(
     let tokens = tokenize(source, language);
     let (hashes, line_map) = compute_k_gram_hashes_with_lines(&tokens, k);
     hashes.into_iter().zip(line_map.into_iter()).collect()
+}
+
+/// Token type indices for the frequency vector.
+/// Order: Keyword, Identifier, Number, String, Operator, Punctuation
+const TOKEN_TYPE_COUNT: usize = 6;
+
+/// Compute token frequency vector for cosine similarity.
+/// Counts meaningful token types (excluding Whitespace/Comment),
+/// normalized by total token count.
+pub fn compute_token_frequency(source: &str, language: Language) -> Vec<f64> {
+    let tokens = tokenize(source, language);
+    let mut counts = [0usize; TOKEN_TYPE_COUNT];
+
+    let mut total = 0usize;
+    for t in &tokens {
+        let idx = match t.kind {
+            TokenKind::Keyword => 0,
+            TokenKind::Identifier => 1,
+            TokenKind::Number => 2,
+            TokenKind::String => 3,
+            TokenKind::Operator => 4,
+            TokenKind::Punctuation => 5,
+            _ => continue, // skip Whitespace, Comment, Unknown
+        };
+        counts[idx] += 1;
+        total += 1;
+    }
+
+    if total == 0 {
+        return vec![0.0; TOKEN_TYPE_COUNT];
+    }
+
+    counts.iter().map(|&c| c as f64 / total as f64).collect()
+}
+
+/// Cosine similarity between two token frequency vectors.
+/// Returns [0.0, 1.0] — 1.0 means identical token distribution.
+pub fn token_cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+
+    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let mag_a: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+    let mag_b: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+    if mag_a == 0.0 || mag_b == 0.0 {
+        return if mag_a == mag_b { 1.0 } else { 0.0 };
+    }
+
+    (dot / (mag_a * mag_b)).clamp(0.0, 1.0)
 }
 
 /// Compute k-gram hashes with line number tracking.
@@ -385,6 +526,46 @@ fn count_intersection(a: &[u32], b: &[u32]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_strip_comments() {
+        assert_eq!(strip_comments("// comment\ncode"), "\ncode");
+        assert_eq!(strip_comments("code /* block */ more"), "code  more");
+        assert_eq!(strip_comments("// line\n/* block */\ncode"), "\n\ncode");
+    }
+
+    #[test]
+    fn test_normalize_whitespace() {
+        let compact = "pub fn foo(x: i32) -> i32 {\n    x + 1\n}";
+        let styled = "pub fn foo( x : i32 ) -> i32\n{\n    x + 1\n}\n";
+        assert_eq!(normalize_whitespace(compact), normalize_whitespace(styled));
+    }
+
+    #[test]
+    fn test_normalize_with_comments() {
+        // Comments should be stripped before normalization
+        let with_comment = "// header\npub fn foo(x: i32) { x + 1 }";
+        let no_comment = "pub fn foo(x: i32) { x + 1 }";
+        assert_eq!(normalize_whitespace(with_comment), normalize_whitespace(no_comment));
+    }
+
+    #[test]
+    fn test_normalize_bracket_spacing() {
+        // After normalization, formatting differences should disappear
+        assert_eq!(normalize_whitespace("arr[j]"), "arr[j]");
+        assert_eq!(normalize_whitespace("arr[ j ]"), "arr[j]");
+        assert_eq!(normalize_whitespace("x ;"), "x;");
+        assert_eq!(normalize_whitespace("0 .. n"), "0..n");
+    }
+
+    #[test]
+    fn test_format_immune_fingerprints() {
+        let compact = "pub fn foo(x: i32) { x + 1 }";
+        let styled = "pub fn foo( x : i32 )\n{\n    x + 1 \n}\n";
+        let fp1 = generate_fingerprints(compact, Language::Rust, 5, 4);
+        let fp2 = generate_fingerprints(styled, Language::Rust, 5, 4);
+        assert_eq!(fp1, fp2, "Formatting changes should not affect fingerprints");
+    }
 
     #[test]
     fn test_tokenize_simple() {
