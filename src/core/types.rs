@@ -73,6 +73,8 @@ pub struct CodeFingerprint {
     pub token_freq: Vec<f64>,
     /// CFG (Control Flow Graph) structural hashes
     pub cfg_hashes: Vec<u64>,
+    /// Order-independent bag-of-statements AST hashes
+    pub bag_ast_hashes: Vec<u64>,
     /// Token count (for normalization)
     pub token_count: usize,
     /// Language of the file

@@ -2,12 +2,164 @@ use sha2::{Digest, Sha256};
 use tree_sitter::{Node, Parser};
 use crate::core::types::Language;
 
-/// Generate AST structural hashes for a source file
+/// Generate AST structural hashes for a source file, including
+/// semantically normalized variants for for→while and match→if equivalence.
 ///
-/// Parses the source code into an AST and computes structural hashes
-/// for subtrees, ignoring identifier names to detect structural similarity
-/// even after variable renaming.
+/// For `for i in 0..n { ... }` and `while i < n { ... i += 1 }`,
+/// additional normalized hashes are emitted so they match.
+/// For `match cond { true => A, false => B }` and `if cond { A } else { B }`,
+/// the same normalization applies.
 pub fn generate_ast_hashes(source: &str, language: Language) -> Option<Vec<u64>> {
+    let mut hashes = generate_ast_hashes_raw(source, language)?;
+
+    // Add semantically normalized hashes
+    let norm_hashes = generate_semantic_ast_hashes(source, language);
+    hashes.extend(norm_hashes);
+
+    hashes.sort_unstable();
+    hashes.dedup();
+    Some(hashes)
+}
+
+/// Generate semantically normalized AST hashes.
+/// For for-loops: emits a normalized hash representing the while-loop equivalent.
+/// For boolean match: emits a normalized hash representing the if-else equivalent.
+fn generate_semantic_ast_hashes(source: &str, language: Language) -> Vec<u64> {
+    let ts_lang = match language.tree_sitter_language() {
+        Some(l) => l,
+        None => return Vec::new(),
+    };
+
+    let mut parser = Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return Vec::new();
+    }
+
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    let root = tree.root_node();
+    let mut hashes = Vec::new();
+    collect_semantic_hashes(&root, source, &mut hashes);
+
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+}
+
+/// Recursively collect semantically normalized hashes from the AST.
+/// Emits normalized hash variants for for-loops and boolean match expressions.
+fn collect_semantic_hashes(node: &Node, source: &str, hashes: &mut Vec<u64>) {
+    let kind = node.kind();
+
+    // For for_in_expression / for_statement → emit normalized while-loop hash
+    if kind == "for_expression" || kind == "for_statement"
+        || kind == "for_in_expression" || kind == "for_in_statement"
+    {
+        if let Some(norm_hash) = normalize_for_to_while(node, source) {
+            hashes.push(norm_hash);
+        }
+    }
+
+    // For match_expression with boolean arms → emit normalized if-else hash
+    if kind == "match_expression" || kind == "match_statement" {
+        if let Some(norm_hash) = normalize_match_to_if(node, source) {
+            hashes.push(norm_hash);
+        }
+    }
+
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_semantic_hashes(&child, source, hashes);
+        }
+    }
+}
+
+/// Normalize a for-loop to its while-loop equivalent hash.
+///   for VAR in START..END { BODY }
+/// → while (VAR < END) { BODY; VAR = VAR + 1; }
+fn normalize_for_to_while(node: &Node, _source: &str) -> Option<u64> {
+    let mut hasher = Sha256::new();
+
+    // Emit as "while_statement" kind
+    hasher.update(b"while_statement");
+
+    // Find the range expression and loop variable
+    let children: Vec<Node> = (0..node.child_count())
+        .filter_map(|i| node.child(i))
+        .collect();
+
+    // Hash children kinds (ignore identifiers — already abstracted in structural_hash)
+    for child in &children {
+        let ck = child.kind();
+        if ck == "for" || ck == "in" {
+            continue; // skip keywords
+        }
+        if ck == "range_expression" || ck == "binary_expression" {
+            // Range becomes condition: VAR < END
+            hasher.update(b"binary_expression");
+            hasher.update(b"<");
+        } else {
+            hasher.update(ck.as_bytes());
+        }
+    }
+
+    let hash = u64::from_be_bytes(hasher.finalize()[..8].try_into().unwrap());
+    Some(hash)
+}
+
+/// Normalize a match expression with boolean arms to if-else equivalent hash.
+///   match COND { true => A, false => B }  →  if COND { A } else { B }
+fn normalize_match_to_if(node: &Node, source: &str) -> Option<u64> {
+    // Check if this is a boolean match: has exactly two arms: true => ... , false => ...
+    let arms: Vec<Node> = (0..node.child_count())
+        .filter_map(|i| node.child(i))
+        .filter(|c| c.kind() == "match_arm")
+        .collect();
+
+    if arms.len() != 2 {
+        return None;
+    }
+
+    // Check arms are true and false
+    let first_pattern = arms[0].child(0)
+        .map(|c| c.utf8_text(source.as_bytes()).unwrap_or(""));
+    let second_pattern = arms[1].child(0)
+        .map(|c| c.utf8_text(source.as_bytes()).unwrap_or(""));
+
+    if !((first_pattern == Some("true") && second_pattern == Some("false"))
+        || (first_pattern == Some("false") && second_pattern == Some("true")))
+    {
+        return None;
+    }
+
+    // Emit normalized if-else hash
+    let mut hasher = Sha256::new();
+    hasher.update(b"if_expression");
+
+    // Hash the condition and body structure
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            let ck = child.kind();
+            if ck != "match" && ck != "{" && ck != "}" && ck != "match_arm"
+                && ck != "," && ck != "=>"
+            {
+                hasher.update(ck.as_bytes());
+            }
+            if ck == "match_arm" {
+                hasher.update(b"block");
+            }
+        }
+    }
+
+    let hash = u64::from_be_bytes(hasher.finalize()[..8].try_into().unwrap());
+    Some(hash)
+}
+
+/// Core AST hash generation (order-dependent, structural only)
+fn generate_ast_hashes_raw(source: &str, language: Language) -> Option<Vec<u64>> {
     let ts_lang = language.tree_sitter_language()?;
 
     let mut parser = Parser::new();
@@ -18,10 +170,6 @@ pub fn generate_ast_hashes(source: &str, language: Language) -> Option<Vec<u64>>
 
     let mut hashes = Vec::new();
     collect_subtree_hashes(&root, source, &mut hashes);
-
-    // Sort and deduplicate for set-based comparison
-    hashes.sort_unstable();
-    hashes.dedup();
 
     Some(hashes)
 }
@@ -279,6 +427,95 @@ pub fn cfg_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
         return 0.0;
     }
 
+    let intersection = count_cfg_intersection(a, b);
+    let union = a.len() + b.len() - intersection;
+    intersection as f64 / union as f64
+}
+
+/// Generate order-independent "bag of statements" AST hashes.
+///
+/// Within each block (function body, if body, etc.), statements are
+/// grouped and hashed as a set, making the result immune to statement
+/// reordering. Variable renaming is also abstracted (same as structural_hash).
+pub fn generate_bag_ast_hashes(source: &str, language: Language) -> Vec<u64> {
+    let ts_lang = match language.tree_sitter_language() {
+        Some(l) => l,
+        None => return Vec::new(),
+    };
+
+    let mut parser = Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return Vec::new();
+    }
+
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    let root = tree.root_node();
+    let mut hashes = Vec::new();
+    collect_bag_hashes(&root, source, &mut hashes);
+
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+}
+
+/// Block-like node kinds whose children should be treated as an unordered bag
+fn is_block_like(kind: &str) -> bool {
+    matches!(
+        kind,
+        "block" | "body" | "source_file" | "program"
+            | "if_statement" | "while_statement" | "for_statement"
+            | "loop_statement" | "match_arm" | "else_clause"
+            | "function_item" | "function_definition" | "function_declaration"
+    )
+}
+
+/// Recursively collect bag-of-statement hashes.
+/// For block-like nodes, children's structural hashes are sorted before
+/// hashing, making the result order-independent.
+fn collect_bag_hashes(node: &Node, source: &str, hashes: &mut Vec<u64>) {
+    if is_block_like(node.kind()) && node.child_count() > 0 {
+        // Collect structural hashes of direct children (excluding braces/parens)
+        let mut child_hashes: Vec<u64> = Vec::new();
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                let ck = child.kind();
+                if ck != "{" && ck != "}" && ck != "(" && ck != ")" && ck != ";" {
+                    child_hashes.push(structural_hash(&child, source));
+                }
+            }
+        }
+
+        if !child_hashes.is_empty() {
+            // Sort to make order-independent
+            child_hashes.sort_unstable();
+
+            // Hash the sorted bag to produce a single fingerprint
+            let mut h = Sha256::new();
+            h.update(node.kind().as_bytes());
+            for ch in &child_hashes {
+                h.update(&ch.to_be_bytes());
+            }
+            let bag_hash = u64::from_be_bytes(h.finalize()[..8].try_into().unwrap());
+            hashes.push(bag_hash);
+        }
+    }
+
+    // Recurse
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_bag_hashes(&child, source, hashes);
+        }
+    }
+}
+
+/// Jaccard similarity for bag-of-statements AST hashes
+pub fn bag_ast_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
+    if a.is_empty() && b.is_empty() { return 1.0; }
+    if a.is_empty() || b.is_empty() { return 0.0; }
     let intersection = count_cfg_intersection(a, b);
     let union = a.len() + b.len() - intersection;
     intersection as f64 / union as f64
