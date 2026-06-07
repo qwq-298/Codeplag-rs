@@ -80,6 +80,12 @@ impl SimilarityEngine {
             // Generate call graph hashes
             let call_graph_hashes = ast::generate_call_graph_hashes(&file.content, file.language);
 
+            // Generate def-use graph hashes
+            let def_use_hashes = ast::generate_def_use_hashes(&file.content, file.language);
+
+            // Generate statement trigram hashes
+            let stmt_hashes = ast::generate_statement_hashes(&file.content, file.language);
+
             let fingerprint = CodeFingerprint {
                 file_path: file.path.clone(),
                 winnowing_hashes,
@@ -90,6 +96,8 @@ impl SimilarityEngine {
                 cfg_hashes,
                 bag_ast_hashes,
                 call_graph_hashes,
+                def_use_hashes,
+                stmt_hashes,
                 token_count,
                 language: file.language,
             };
@@ -142,13 +150,17 @@ impl SimilarityEngine {
                 let cfg_sim = ast::cfg_jaccard_similarity(&fp_a.cfg_hashes, &fp_b.cfg_hashes);
                 let bag_sim = ast::bag_ast_jaccard_similarity(&fp_a.bag_ast_hashes, &fp_b.bag_ast_hashes);
                 let cg_sim = ast::call_graph_jaccard_similarity(&fp_a.call_graph_hashes, &fp_b.call_graph_hashes);
+                let du_sim = ast::def_use_jaccard_similarity(&fp_a.def_use_hashes, &fp_b.def_use_hashes);
+                let st_sim = ast::cfg_jaccard_similarity(&fp_a.stmt_hashes, &fp_b.stmt_hashes);
 
                 let similarity_score = if fp_a.ast_hashes.is_empty() {
-                    0.35 * winnowing_score + 0.20 * bag_sim
-                        + 0.15 * token_sim + 0.20 * cfg_sim + 0.10 * cg_sim
+                    0.40 * winnowing_score + 0.20 * bag_sim
+                        + 0.05 * token_sim + 0.10 * cfg_sim + 0.10 * cg_sim
+                        + 0.05 * du_sim + 0.10 * st_sim
                 } else {
-                    0.30 * winnowing_score + 0.20 * ast_score
-                        + 0.15 * bag_sim + 0.10 * token_sim + 0.15 * cfg_sim + 0.10 * cg_sim
+                    0.35 * winnowing_score + 0.20 * ast_score
+                        + 0.10 * bag_sim + 0.05 * token_sim + 0.10 * cfg_sim
+                        + 0.05 * cg_sim + 0.05 * du_sim + 0.10 * st_sim
                 };
 
                 if similarity_score >= self.config.threshold {
@@ -210,6 +222,8 @@ impl SimilarityEngine {
             cfg_hashes: ast::generate_cfg_hashes(&target.content, target.language),
             bag_ast_hashes: ast::generate_bag_ast_hashes(&target.content, target.language),
             call_graph_hashes: ast::generate_call_graph_hashes(&target.content, target.language),
+            def_use_hashes: ast::generate_def_use_hashes(&target.content, target.language),
+            stmt_hashes: ast::generate_statement_hashes(&target.content, target.language),
             token_count: target.content.lines().count(),
             language: target.language,
         };
@@ -238,13 +252,17 @@ impl SimilarityEngine {
                 let cfg_sim = ast::cfg_jaccard_similarity(&target_fp.cfg_hashes, &fp.cfg_hashes);
                 let bag_sim = ast::bag_ast_jaccard_similarity(&target_fp.bag_ast_hashes, &fp.bag_ast_hashes);
                 let cg_sim = ast::call_graph_jaccard_similarity(&target_fp.call_graph_hashes, &fp.call_graph_hashes);
+                let du_sim = ast::def_use_jaccard_similarity(&target_fp.def_use_hashes, &fp.def_use_hashes);
+                let st_sim = ast::cfg_jaccard_similarity(&target_fp.stmt_hashes, &fp.stmt_hashes);
 
                 let similarity_score = if target_fp.ast_hashes.is_empty() {
-                    0.35 * winnowing_score + 0.20 * bag_sim
-                        + 0.15 * token_sim + 0.20 * cfg_sim + 0.10 * cg_sim
+                    0.40 * winnowing_score + 0.20 * bag_sim
+                        + 0.05 * token_sim + 0.10 * cfg_sim + 0.10 * cg_sim
+                        + 0.05 * du_sim + 0.10 * st_sim
                 } else {
-                    0.30 * winnowing_score + 0.20 * ast_score
-                        + 0.15 * bag_sim + 0.10 * token_sim + 0.15 * cfg_sim + 0.10 * cg_sim
+                    0.35 * winnowing_score + 0.20 * ast_score
+                        + 0.10 * bag_sim + 0.05 * token_sim + 0.10 * cfg_sim
+                        + 0.05 * cg_sim + 0.05 * du_sim + 0.10 * st_sim
                 };
 
                 if similarity_score >= self.config.threshold {
@@ -311,6 +329,8 @@ impl SimilarityEngine {
                     cfg_hashes: ast::generate_cfg_hashes(&file_a.content, file_a.language),
                     bag_ast_hashes: ast::generate_bag_ast_hashes(&file_a.content, file_a.language),
                     call_graph_hashes: ast::generate_call_graph_hashes(&file_a.content, file_a.language),
+                    def_use_hashes: ast::generate_def_use_hashes(&file_a.content, file_a.language),
+                    stmt_hashes: ast::generate_statement_hashes(&file_a.content, file_a.language),
                     token_count: file_a.content.lines().count(),
                     language: file_a.language,
                 };
@@ -340,6 +360,8 @@ impl SimilarityEngine {
                         cfg_hashes: ast::generate_cfg_hashes(&file_b.content, file_b.language),
                         bag_ast_hashes: ast::generate_bag_ast_hashes(&file_b.content, file_b.language),
                         call_graph_hashes: ast::generate_call_graph_hashes(&file_b.content, file_b.language),
+                        def_use_hashes: ast::generate_def_use_hashes(&file_b.content, file_b.language),
+                        stmt_hashes: ast::generate_statement_hashes(&file_b.content, file_b.language),
                         token_count: file_b.content.lines().count(),
                         language: file_b.language,
                     };
@@ -352,10 +374,14 @@ impl SimilarityEngine {
                     let cs = ast::cfg_jaccard_similarity(&fp_a.cfg_hashes, &fp_b.cfg_hashes);
                     let bs = ast::bag_ast_jaccard_similarity(&fp_a.bag_ast_hashes, &fp_b.bag_ast_hashes);
                     let cgs = ast::call_graph_jaccard_similarity(&fp_a.call_graph_hashes, &fp_b.call_graph_hashes);
+                    let dus = ast::def_use_jaccard_similarity(&fp_a.def_use_hashes, &fp_b.def_use_hashes);
+                    let sts = ast::cfg_jaccard_similarity(&fp_a.stmt_hashes, &fp_b.stmt_hashes);
                     let sim = if fp_a.ast_hashes.is_empty() {
-                        0.35 * ws + 0.20 * bs + 0.15 * ts + 0.20 * cs + 0.10 * cgs
+                        0.27 * ws + 0.17 * bs + 0.13 * ts + 0.13 * cs
+                            + 0.10 * cgs + 0.10 * dus + 0.10 * sts
                     } else {
-                        0.30 * ws + 0.20 * as_ + 0.15 * bs + 0.10 * ts + 0.15 * cs + 0.10 * cgs
+                        0.22 * ws + 0.18 * as_ + 0.10 * bs + 0.10 * ts + 0.12 * cs
+                            + 0.10 * cgs + 0.10 * dus + 0.08 * sts
                     };
 
                     if sim > best_score {
@@ -441,6 +467,8 @@ impl SimilarityEngine {
                 cfg_hashes: ast::generate_cfg_hashes(&func.content, func.language),
                 bag_ast_hashes: ast::generate_bag_ast_hashes(&func.content, func.language),
                 call_graph_hashes: ast::generate_call_graph_hashes(&func.content, func.language),
+                def_use_hashes: ast::generate_def_use_hashes(&func.content, func.language),
+                stmt_hashes: ast::generate_statement_hashes(&func.content, func.language),
                 token_count: func.content.lines().count(),
                 language: func.language,
             };
@@ -477,13 +505,17 @@ impl SimilarityEngine {
                 let cfg_sim = ast::cfg_jaccard_similarity(&fp_a.cfg_hashes, &fp_b.cfg_hashes);
                 let bag_sim = ast::bag_ast_jaccard_similarity(&fp_a.bag_ast_hashes, &fp_b.bag_ast_hashes);
                 let cg_sim = ast::call_graph_jaccard_similarity(&fp_a.call_graph_hashes, &fp_b.call_graph_hashes);
+                let du_sim = ast::def_use_jaccard_similarity(&fp_a.def_use_hashes, &fp_b.def_use_hashes);
+                let st_sim = ast::cfg_jaccard_similarity(&fp_a.stmt_hashes, &fp_b.stmt_hashes);
 
                 let similarity_score = if fp_a.ast_hashes.is_empty() {
-                    0.35 * winnowing_score + 0.20 * bag_sim
-                        + 0.15 * token_sim + 0.20 * cfg_sim + 0.10 * cg_sim
+                    0.40 * winnowing_score + 0.20 * bag_sim
+                        + 0.05 * token_sim + 0.10 * cfg_sim + 0.10 * cg_sim
+                        + 0.05 * du_sim + 0.10 * st_sim
                 } else {
-                    0.30 * winnowing_score + 0.20 * ast_score
-                        + 0.15 * bag_sim + 0.10 * token_sim + 0.15 * cfg_sim + 0.10 * cg_sim
+                    0.35 * winnowing_score + 0.20 * ast_score
+                        + 0.10 * bag_sim + 0.05 * token_sim + 0.10 * cfg_sim
+                        + 0.05 * cg_sim + 0.05 * du_sim + 0.10 * st_sim
                 };
 
                 if similarity_score >= self.config.threshold {

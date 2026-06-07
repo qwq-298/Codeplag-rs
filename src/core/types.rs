@@ -77,6 +77,10 @@ pub struct CodeFingerprint {
     pub bag_ast_hashes: Vec<u64>,
     /// Call graph edge hashes (caller→callee relationships)
     pub call_graph_hashes: Vec<u64>,
+    /// Def-use graph hashes (variable definition → use edges, name-abstracted)
+    pub def_use_hashes: Vec<u64>,
+    /// Statement trigram hashes (three consecutive statement types, order-aware)
+    pub stmt_hashes: Vec<u64>,
     /// Token count (for normalization)
     pub token_count: usize,
     /// Language of the file

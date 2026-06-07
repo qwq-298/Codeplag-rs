@@ -440,6 +440,171 @@ fn collect_call_expressions(node: &Node, source: &str, calls: &mut Vec<(String, 
     }
 }
 
+/// Generate def-use graph hashes.
+///
+/// Tracks variable definitions and uses, building (def, use) edge hashes
+/// abstracted of variable names. Two files with the same data flow
+/// (e.g., temp = a + b; return temp + c) will match even if variable
+/// names are completely different.
+pub fn generate_def_use_hashes(source: &str, language: Language) -> Vec<u64> {
+    let ts_lang = match language.tree_sitter_language() {
+        Some(l) => l,
+        None => return Vec::new(),
+    };
+
+    let mut parser = Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return Vec::new();
+    }
+
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    let root = tree.root_node();
+    let mut definitions: Vec<(usize, usize, usize)> = Vec::new(); // (rel_pos, scope_start, scope_end)
+    let mut uses: Vec<(usize, usize, usize)> = Vec::new(); // (rel_pos, scope_start, scope_end)
+
+    // Pass 0 as the function start — positions are relative to enclosing function
+    collect_def_uses(&root, source, &mut definitions, &mut uses, 0, root.end_byte());
+
+    // No uses or no defs → empty graph
+    if uses.is_empty() || definitions.is_empty() {
+        return Vec::new();
+    }
+
+    let mut edges: Vec<u64> = Vec::new();
+
+    // For each use, find the nearest preceding definition within the same or enclosing scope
+    for &(use_rel_pos, use_scope_start, _use_scope_end) in &uses {
+        let best_def = definitions
+            .iter()
+            .filter(|(_, def_scope_start, def_scope_end)| {
+                *def_scope_start <= use_scope_start // def scope encloses or equals use scope
+            })
+            .max_by_key(|(def_rel_pos, _, _)| *def_rel_pos);
+
+        if let Some((def_rel_pos, _, _)) = best_def {
+            let mut h = Sha256::new();
+            // Hash: relative positions within scope, normalized
+            let normalized = def_rel_pos.wrapping_mul(2654435761)
+                ^ use_rel_pos.wrapping_mul(3141592653);
+            h.update(&normalized.to_be_bytes());
+            edges.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
+        }
+    }
+
+    // Also hash the def/use count ratio as structural metadata
+    let def_count = definitions.len();
+    let use_count = uses.len();
+    if def_count > 0 && use_count > 0 {
+        let mut h = Sha256::new();
+        h.update(b"du_ratio:");
+        h.update(&(def_count as u64).to_be_bytes());
+        h.update(&(use_count as u64).to_be_bytes());
+        edges.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
+    }
+
+    edges.sort_unstable();
+    edges.dedup();
+
+    // Deduplicate by hashing self-transitions
+    if edges.len() > 1 {
+        let mut unique = Vec::with_capacity(edges.len());
+        unique.push(edges[0]);
+        for i in 1..edges.len() {
+            if edges[i] != edges[i - 1] {
+                unique.push(edges[i]);
+            }
+        }
+        return unique;
+    }
+
+    edges
+}
+
+/// Recursively collect variable definitions and uses from the AST.
+/// Definitions: let declarations, variable declarations, function parameters.
+/// Uses: identifier nodes that are not definitions.
+fn collect_def_uses(
+    node: &Node,
+    source: &str,
+    definitions: &mut Vec<(usize, usize, usize)>,
+    uses: &mut Vec<(usize, usize, usize)>,
+    fn_start: usize,
+    scope_end: usize,
+) {
+    let kind = node.kind();
+
+    // Definitions
+    match kind {
+        "let_declaration" | "variable_declaration" => {
+            if let Some(def_ident) = node
+                .children(&mut node.walk())
+                .find(|c| c.kind() == "identifier")
+            {
+                definitions.push((def_ident.start_byte() - fn_start, fn_start, scope_end));
+            }
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "identifier" {
+                        continue;
+                    }
+                    collect_def_uses(&child, source, definitions, uses, fn_start, scope_end);
+                }
+            }
+            return;
+        }
+        "parameters" | "parameter" => {
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if child.kind() == "identifier" || child.kind() == "self_parameter" {
+                        definitions.push((child.start_byte() - fn_start, fn_start, scope_end));
+                    }
+                }
+            }
+        }
+        "function_item" | "function_definition" | "function_declaration"
+        | "method_definition" | "arrow_function" => {
+            let func_start = node.start_byte();
+            let new_scope = node.end_byte();
+            let mut skip_name = true;
+            for i in 0..node.child_count() {
+                if let Some(child) = node.child(i) {
+                    if skip_name && child.kind() == "identifier" {
+                        skip_name = false;
+                        continue;
+                    }
+                    collect_def_uses(&child, source, definitions, uses, func_start, new_scope);
+                }
+            }
+            return;
+        }
+        "identifier" | "self_parameter" => {
+            uses.push((node.start_byte() - fn_start, fn_start, scope_end));
+            return;
+        }
+        _ => {}
+    }
+
+    // Recurse into children
+    for i in 0..node.child_count() {
+        if let Some(child) = node.child(i) {
+            collect_def_uses(&child, source, definitions, uses, fn_start, scope_end);
+        }
+    }
+}
+
+/// Jaccard similarity for def-use graph hashes
+pub fn def_use_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
+    if a.is_empty() && b.is_empty() { return 1.0; }
+    if a.is_empty() || b.is_empty() { return 0.0; }
+    let intersection = count_cfg_intersection(a, b);
+    let union = a.len() + b.len() - intersection;
+    intersection as f64 / union as f64
+}
+
 /// Jaccard similarity for call graph hashes
 pub fn call_graph_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
     if a.is_empty() && b.is_empty() { return 1.0; }
@@ -447,6 +612,147 @@ pub fn call_graph_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
     let intersection = count_cfg_intersection(a, b);
     let union = a.len() + b.len() - intersection;
     intersection as f64 / union as f64
+}
+
+/// Statement type classification for sequence comparison.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+enum StmtType {
+    Declaration,   // let, var, const
+    Assignment,    // =, +=, etc.
+    IfStmt,        // if
+    ForLoop,       // for
+    WhileLoop,     // while
+    MatchExpr,     // match
+    ReturnStmt,    // return
+    FunctionDef,   // fn/function/def
+    CallExpr,      // function call
+    Block,         // { }
+    Other,
+}
+
+impl StmtType {
+    fn from_kind(kind: &str) -> Self {
+        match kind {
+            "let_declaration" | "variable_declaration" | "const_declaration"
+            | "declaration" => StmtType::Declaration,
+            "assignment_expression" | "compound_assignment_expr" => StmtType::Assignment,
+            "if_statement" | "if_expression" | "else_clause" => StmtType::IfStmt,
+            "for_statement" | "for_expression"
+            | "for_in_statement" | "for_in_expression" => StmtType::ForLoop,
+            "while_statement" | "while_expression"
+            | "loop_statement" | "loop_expression" => StmtType::WhileLoop,
+            "match_statement" | "match_expression" => StmtType::MatchExpr,
+            "return_statement" | "return_expression" => StmtType::ReturnStmt,
+            "function_item" | "function_definition" | "function_declaration"
+            | "method_definition" | "arrow_function" => StmtType::FunctionDef,
+            "call_expression" => StmtType::CallExpr,
+            "block" | "body" => StmtType::Block,
+            _ => StmtType::Other,
+        }
+    }
+}
+
+/// Generate statement index hashes for sequence similarity.
+///
+/// Extracts statement types from the AST and hashes consecutive triples
+/// (trigrams of statement types). Two files with the same statement
+/// structure (e.g., let→for→if) will share these trigram hashes.
+pub fn generate_statement_hashes(source: &str, language: Language) -> Vec<u64> {
+    let ts_lang = match language.tree_sitter_language() {
+        Some(l) => l,
+        None => return Vec::new(),
+    };
+
+    let mut parser = Parser::new();
+    if parser.set_language(&ts_lang).is_err() {
+        return Vec::new();
+    }
+
+    let tree = match parser.parse(source, None) {
+        Some(t) => t,
+        None => return Vec::new(),
+    };
+
+    let root = tree.root_node();
+    let mut stmts: Vec<u8> = Vec::new();
+    collect_statements(&root, &mut stmts);
+
+    if stmts.len() < 3 {
+        // For short sequences, hash each statement pair
+        let mut hashes = Vec::new();
+        for i in 0..stmts.len().saturating_sub(1) {
+            let mut h = Sha256::new();
+            h.update(&[stmts[i]]);
+            h.update(&[stmts[i + 1]]);
+            hashes.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
+        }
+        hashes.sort_unstable();
+        hashes.dedup();
+        return hashes;
+    }
+
+    // Hash consecutive triples (order-aware trigrams)
+    let mut hashes = Vec::new();
+    for window in stmts.windows(3) {
+        let mut h = Sha256::new();
+        h.update(window);
+        hashes.push(u64::from_be_bytes(h.finalize_reset()[..8].try_into().unwrap()));
+    }
+
+    // Also hash the global statement type distribution
+    let mut h = Sha256::new();
+    h.update(b"stmt_dist:");
+    let mut counts = [0u64; 12];
+    for &s in &stmts {
+        counts[s as usize] += 1;
+    }
+    for c in counts {
+        h.update(&c.to_be_bytes());
+    }
+    hashes.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
+
+    hashes.sort_unstable();
+    hashes.dedup();
+    hashes
+}
+
+/// Recursively collect top-level statement types from the AST.
+fn collect_statements(node: &Node, stmts: &mut Vec<u8>) {
+    let kind = node.kind();
+    let st = StmtType::from_kind(kind);
+
+    // These are statement-level nodes — record them
+    let is_stmt = matches!(
+        st,
+        StmtType::Declaration | StmtType::Assignment | StmtType::IfStmt
+            | StmtType::ForLoop | StmtType::WhileLoop | StmtType::MatchExpr
+            | StmtType::ReturnStmt | StmtType::FunctionDef | StmtType::CallExpr
+    );
+
+    if is_stmt {
+        stmts.push(st as u8);
+    }
+
+    // Only recurse into block-like containers, not every expression
+    let recurse = matches!(
+        kind,
+        "source_file" | "program" | "block" | "body"
+            | "function_item" | "function_definition" | "function_declaration"
+            | "method_definition" | "arrow_function"
+            | "if_statement" | "if_expression" | "else_clause"
+            | "for_statement" | "for_expression" | "while_statement"
+            | "while_expression" | "loop_statement" | "loop_expression"
+            | "match_statement" | "match_expression" | "match_arm"
+            | "let_declaration" | "variable_declaration"
+    );
+
+    if recurse {
+        for i in 0..node.child_count() {
+            if let Some(child) = node.child(i) {
+                collect_statements(&child, stmts);
+            }
+        }
+    }
 }
 
 /// Generate CFG fingerprint hashes for a source file.
