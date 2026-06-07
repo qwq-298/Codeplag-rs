@@ -82,4 +82,15 @@ pub enum Commands {
         #[arg(short, long, default_value = "text")]
         output: String,
     },
+
+    /// Batch fetch multiple GitHub repos and compare all pairs
+    Batch {
+        /// Comma-separated GitHub repo URLs (e.g., "user/a,user/b")
+        #[arg(short, long, value_delimiter = ',')]
+        repos: Vec<String>,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        output: String,
+    },
 }

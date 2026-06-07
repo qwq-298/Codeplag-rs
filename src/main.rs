@@ -125,6 +125,59 @@ fn main() {
             print_results_with_files(&results, output, &file_refs);
         }
 
+        Commands::Batch { repos, output } => {
+            if repos.len() < 2 {
+                eprintln!("Need at least 2 repos for batch comparison");
+                std::process::exit(1);
+            }
+
+            println!("Batch fetching {} repositories...\n", repos.len());
+
+            // Step 1: Fetch all repos
+            let mut projects: Vec<(String, Vec<codeplag::core::types::SourceFile>)> = Vec::new();
+            for repo_url in repos {
+                let fetcher = GitHubFetcher::new(&work_dir);
+                let name = repo_url
+                    .trim_end_matches(".git")
+                    .split('/')
+                    .last()
+                    .unwrap_or("unknown")
+                    .to_string();
+                print!("  Fetching {}... ", name);
+                let files = fetcher.fetch_repo(repo_url)
+                    .unwrap_or_else(|e| {
+                        eprintln!("Error: {}", e);
+                        std::process::exit(1);
+                    });
+                println!("{} files", files.len());
+                projects.push((name, files));
+            }
+
+            // Step 2: Compare all pairs
+            println!("\nComparing all pairs...\n");
+            let engine = SimilarityEngine::new(config);
+            let mut results: Vec<(String, String, codeplag::core::types::ProjectResult)> = Vec::new();
+
+            for i in 0..projects.len() {
+                for j in (i + 1)..projects.len() {
+                    let (name_a, files_a) = &projects[i];
+                    let (name_b, files_b) = &projects[j];
+                    let result = engine.compare_projects(files_a, files_b);
+                    results.push((name_a.clone(), name_b.clone(), result));
+                }
+            }
+
+            // Sort by project score descending
+            results.sort_by(|(_, _, a), (_, _, b)| {
+                b.project_score
+                    .partial_cmp(&a.project_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Step 3: Display
+            print_batch_results(&results, output);
+        }
+
         Commands::Project { project_a, project_b, output } => {
             let fetcher = GitHubFetcher::new(&work_dir);
             let files_a = fetcher.collect_local(project_a)
@@ -338,6 +391,90 @@ fn print_project_result(
                 result.file_matches.len(),
             );
         }
+    }
+}
+
+/// Display batch comparison results
+fn print_batch_results(
+    results: &[(String, String, codeplag::core::types::ProjectResult)],
+    format: &str,
+) {
+    match format {
+        "json" => {
+            let output: Vec<serde_json::Value> = results
+                .iter()
+                .map(|(a, b, r)| {
+                    serde_json::json!({
+                        "project_a": a,
+                        "project_b": b,
+                        "project_score": r.project_score,
+                        "file_matches": r.file_matches,
+                    })
+                })
+                .collect();
+            println!("{}", serde_json::to_string_pretty(&output).unwrap());
+        }
+        _ => {
+            if results.is_empty() {
+                println!("\nNo results.");
+                return;
+            }
+
+            println!("=== Batch Comparison Results ===\n");
+            println!(
+                "  {:>3}  {:<20} {:<20} {:>8}  {:>6}",
+                "#", "Repository A", "Repository B", "Score", "Files"
+            );
+            println!("  ───────────────────────────────────────────────────────────");
+
+            for (i, (name_a, name_b, result)) in results.iter().enumerate() {
+                let bar = match result.project_score {
+                    s if s >= 0.8 => "🔴",
+                    s if s >= 0.5 => "🟡",
+                    _ => "🟢",
+                };
+                println!(
+                    "  {:>3}  {:<20} {:<20} {:>6.1}%  {:>4} {}",
+                    i + 1,
+                    truncate_name(name_a, 20),
+                    truncate_name(name_b, 20),
+                    result.project_score * 100.0,
+                    result.file_matches.len(),
+                    bar,
+                );
+            }
+
+            // Detail for top 3 pairs
+            println!("\n  Top matches detail:\n");
+            let top_n = results.len().min(3);
+            for i in 0..top_n {
+                let (name_a, name_b, result) = &results[i];
+                println!(
+                    "  {} ↔ {}  ({:.1}% overall)",
+                    name_a, name_b, result.project_score * 100.0
+                );
+                for m in result.file_matches.iter().take(5) {
+                    println!(
+                        "    ✓ {: <30} ↔ {: <30}  {:.1}%",
+                        truncate_name(&m.file_a, 30),
+                        truncate_name(&m.file_b, 30),
+                        m.similarity_score * 100.0,
+                    );
+                }
+                if result.file_matches.len() > 5 {
+                    println!("    ... and {} more files", result.file_matches.len() - 5);
+                }
+                println!();
+            }
+        }
+    }
+}
+
+fn truncate_name(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max - 1])
     }
 }
 
