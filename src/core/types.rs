@@ -38,7 +38,11 @@ impl Language {
             Language::JavaScript | Language::TypeScript => {
                 Some(tree_sitter_javascript::LANGUAGE.into())
             }
-            _ => None,
+            Language::Go => Some(tree_sitter_go::LANGUAGE.into()),
+            Language::C => Some(tree_sitter_c::LANGUAGE.into()),
+            Language::Cpp => Some(tree_sitter_cpp::LANGUAGE.into()),
+            Language::Java => Some(tree_sitter_java::LANGUAGE.into()),
+            Language::Unknown => None,
         }
     }
 }

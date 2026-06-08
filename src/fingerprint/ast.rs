@@ -256,7 +256,22 @@ pub fn extract_functions(source: &str, language: Language) -> Vec<crate::core::t
             "arrow_function",
             "method_definition",
         ],
-        _ => return Vec::new(),
+        Language::Go => &[
+            "function_declaration",
+            "method_declaration",
+        ],
+        Language::C => &[
+            "function_definition",
+        ],
+        Language::Cpp => &[
+            "function_definition",
+            "method_definition",
+        ],
+        Language::Java => &[
+            "method_declaration",
+            "constructor_declaration",
+        ],
+        Language::Unknown => return Vec::new(),
     };
 
     collect_function_nodes(&root, function_kinds, source, &mut functions);
