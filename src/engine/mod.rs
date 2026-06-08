@@ -412,11 +412,18 @@ impl SimilarityEngine {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        let project_score = if file_matches.is_empty() {
+        // Coverage-aware scoring: unmatched files penalize the project score.
+        // project_score = (sum of best matches) / max(|A|, |B|)
+        // This ensures that 100% means ALL files matched at 100%.
+        let total_files_a = project_a.iter().filter(|f| f.language != Language::Unknown).count();
+        let total_files_b = project_b.iter().filter(|f| f.language != Language::Unknown).count();
+        let max_files = total_files_a.max(total_files_b);
+
+        let project_score = if max_files == 0 {
             0.0
         } else {
-            file_matches.iter().map(|m| m.similarity_score).sum::<f64>()
-                / file_matches.len() as f64
+            let sum_matches: f64 = file_matches.iter().map(|m| m.similarity_score).sum();
+            sum_matches / max_files as f64
         };
 
         ProjectResult {

@@ -24,6 +24,10 @@ pub struct Cli {
     #[arg(short, long)]
     pub verbose: bool,
 
+    /// GitHub personal access token (for API search)
+    #[arg(long, env = "GITHUB_TOKEN")]
+    pub github_token: Option<String>,
+
     /// Compare at function level (extract and compare individual functions)
     #[arg(long)]
     pub functions: bool,
@@ -62,6 +66,25 @@ pub enum Commands {
         /// GitHub repository URL
         #[arg(short, long)]
         repo: String,
+
+        /// Output format (text, json)
+        #[arg(short, long, default_value = "text")]
+        output: String,
+    },
+
+    /// Search GitHub for code similar to a local project
+    Search {
+        /// Path to a source file or project directory
+        #[arg(short, long)]
+        path: Option<String>,
+
+        /// GitHub repo URL to fetch and search against
+        #[arg(short, long)]
+        repo: Option<String>,
+
+        /// Maximum number of search results per term (default: 5)
+        #[arg(short, long, default_value = "5")]
+        limit: usize,
 
         /// Output format (text, json)
         #[arg(short, long, default_value = "text")]
