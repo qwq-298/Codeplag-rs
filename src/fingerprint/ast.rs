@@ -380,7 +380,7 @@ pub fn generate_call_graph_hashes(source: &str, language: Language) -> Vec<u64> 
     if functions.len() > 1 {
         let mut h = Sha256::new();
         h.update(b"func_count:");
-        h.update(&(functions.len() as u64).to_be_bytes());
+        h.update((functions.len() as u64).to_be_bytes());
         edges.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
     }
 
@@ -480,7 +480,7 @@ pub fn generate_def_use_hashes(source: &str, language: Language) -> Vec<u64> {
     for &(use_rel_pos, use_scope_start, _use_scope_end) in &uses {
         let best_def = definitions
             .iter()
-            .filter(|(_, def_scope_start, def_scope_end)| {
+            .filter(|(_, def_scope_start, _def_scope_end)| {
                 *def_scope_start <= use_scope_start // def scope encloses or equals use scope
             })
             .max_by_key(|(def_rel_pos, _, _)| *def_rel_pos);
@@ -490,7 +490,7 @@ pub fn generate_def_use_hashes(source: &str, language: Language) -> Vec<u64> {
             // Hash: relative positions within scope, normalized
             let normalized = def_rel_pos.wrapping_mul(2654435761)
                 ^ use_rel_pos.wrapping_mul(3141592653);
-            h.update(&normalized.to_be_bytes());
+            h.update(normalized.to_be_bytes());
             edges.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
         }
     }
@@ -501,8 +501,8 @@ pub fn generate_def_use_hashes(source: &str, language: Language) -> Vec<u64> {
     if def_count > 0 && use_count > 0 {
         let mut h = Sha256::new();
         h.update(b"du_ratio:");
-        h.update(&(def_count as u64).to_be_bytes());
-        h.update(&(use_count as u64).to_be_bytes());
+        h.update((def_count as u64).to_be_bytes());
+        h.update((use_count as u64).to_be_bytes());
         edges.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
     }
 
@@ -682,8 +682,8 @@ pub fn generate_statement_hashes(source: &str, language: Language) -> Vec<u64> {
         let mut hashes = Vec::new();
         for i in 0..stmts.len().saturating_sub(1) {
             let mut h = Sha256::new();
-            h.update(&[stmts[i]]);
-            h.update(&[stmts[i + 1]]);
+            h.update([stmts[i]]);
+            h.update([stmts[i + 1]]);
             hashes.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
         }
         hashes.sort_unstable();
@@ -707,7 +707,7 @@ pub fn generate_statement_hashes(source: &str, language: Language) -> Vec<u64> {
         counts[s as usize] += 1;
     }
     for c in counts {
-        h.update(&c.to_be_bytes());
+        h.update(c.to_be_bytes());
     }
     hashes.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
 
@@ -927,7 +927,7 @@ fn collect_bag_hashes(node: &Node, source: &str, hashes: &mut Vec<u64>) {
             let mut h = Sha256::new();
             h.update(node.kind().as_bytes());
             for ch in &child_hashes {
-                h.update(&ch.to_be_bytes());
+                h.update(ch.to_be_bytes());
             }
             let bag_hash = u64::from_be_bytes(h.finalize()[..8].try_into().unwrap());
             hashes.push(bag_hash);

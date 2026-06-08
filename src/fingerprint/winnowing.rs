@@ -347,7 +347,7 @@ pub fn generate_all_kgraph_lines(
 ) -> Vec<(u32, usize)> {
     let tokens = tokenize(source, language);
     let (hashes, line_map) = compute_k_gram_hashes_with_lines(&tokens, k);
-    hashes.into_iter().zip(line_map.into_iter()).collect()
+    hashes.into_iter().zip(line_map).collect()
 }
 
 /// Token type indices for the frequency vector.

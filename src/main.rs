@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use codeplag::cli::{Cli, Commands};
 use codeplag::core::types::AnalyzerConfig;
-use codeplag::engine::SimilarityEngine;
+use codeplag::engine::{FingerprintCache, SimilarityEngine};
 use codeplag::fetcher::github::GitHubFetcher;
 
 fn main() {
@@ -36,11 +36,11 @@ fn main() {
             println!("Found {} source files in {}", files.len(), path);
 
             if cli.functions {
-                let engine = SimilarityEngine::new(config);
+                let engine = SimilarityEngine::new(config).with_cache(FingerprintCache::new(".codeplag_cache"));
                 let func_results = engine.compare_functions(&files);
                 print_function_results(&func_results, output);
             } else {
-                let mut engine = SimilarityEngine::new(config);
+                let mut engine = SimilarityEngine::new(config).with_cache(FingerprintCache::new(".codeplag_cache"));
                 engine.index_files(&files);
                 let results = engine.compare_all();
 
@@ -87,7 +87,7 @@ fn main() {
                 // Function-level: merge target + against and compare all functions
                 let all_files: Vec<codeplag::core::types::SourceFile> =
                     target_files.iter().chain(against_files.iter()).cloned().collect();
-                let engine = SimilarityEngine::new(config);
+                let engine = SimilarityEngine::new(config).with_cache(FingerprintCache::new(".codeplag_cache"));
                 let func_results = engine.compare_functions(&all_files);
                 // Filter to only target vs against (not against vs against)
                 let filtered: Vec<_> = func_results.into_iter()
@@ -97,7 +97,7 @@ fn main() {
                     .collect();
                 print_function_results(&filtered, output);
             } else {
-                let mut engine = SimilarityEngine::new(config);
+                let mut engine = SimilarityEngine::new(config).with_cache(FingerprintCache::new(".codeplag_cache"));
                 engine.index_files(&against_files);
                 let results = engine.compare_against(&target_files[0]);
 
@@ -117,7 +117,7 @@ fn main() {
 
             println!("Fetched {} source files from {}", files.len(), repo);
 
-            let mut engine = SimilarityEngine::new(config);
+            let mut engine = SimilarityEngine::new(config).with_cache(FingerprintCache::new(".codeplag_cache"));
             engine.index_files(&files);
             let results = engine.compare_all();
 
@@ -140,7 +140,7 @@ fn main() {
                 let name = repo_url
                     .trim_end_matches(".git")
                     .split('/')
-                    .last()
+                    .next_back()
                     .unwrap_or("unknown")
                     .to_string();
                 print!("  Fetching {}... ", name);
@@ -155,7 +155,7 @@ fn main() {
 
             // Step 2: Compare all pairs
             println!("\nComparing all pairs...\n");
-            let engine = SimilarityEngine::new(config);
+            let engine = SimilarityEngine::new(config).with_cache(FingerprintCache::new(".codeplag_cache"));
             let mut results: Vec<(String, String, codeplag::core::types::ProjectResult)> = Vec::new();
 
             for i in 0..projects.len() {
@@ -232,7 +232,7 @@ fn main() {
 
             // Pick mix of terms: some specific, some common
             // Sort by length: shorter = more common = better search results
-            term_lang_pairs.sort_by(|a, b| a.0.len().cmp(&b.0.len()));
+            term_lang_pairs.sort_by_key(|a| a.0.len());
             // Take a mix: first few (most common) + last few (most specific)
             let mut picked: Vec<(String, String)> = Vec::new();
             let n = term_lang_pairs.len();
@@ -384,7 +384,7 @@ fn main() {
                 files_b.len()
             );
 
-            let engine = SimilarityEngine::new(config);
+            let engine = SimilarityEngine::new(config).with_cache(FingerprintCache::new(".codeplag_cache"));
             let result = engine.compare_projects(&files_a, &files_b);
             print_project_result(&result, output);
         }
@@ -691,7 +691,7 @@ fn extract_search_terms(content: &str, lang: &str) -> Vec<String> {
         // Python class names
         if is_python && trimmed.starts_with("class ") {
             let name = trimmed.strip_prefix("class ").unwrap_or("")
-                .split(|c: char| c == '(' || c == ':').next().unwrap_or("").trim().to_string();
+                .split(['(', ':']).next().unwrap_or("").trim().to_string();
             if name.len() >= 3 {
                 terms.insert(name);
             }
@@ -702,7 +702,7 @@ fn extract_search_terms(content: &str, lang: &str) -> Vec<String> {
             // Extract from .prototype.method → just "method"
             if let Some(dot) = trimmed.find(".prototype.") {
                 let after = &trimmed[dot + 11..]; // skip ".prototype."
-                let name = after.split(|c: char| c == '(' || c == '=').next().unwrap_or("").trim().to_string();
+                let name = after.split(['(', '=']).next().unwrap_or("").trim().to_string();
                 if name.len() >= 3 {
                     terms.insert(name);
                 }
@@ -717,7 +717,7 @@ fn extract_search_terms(content: &str, lang: &str) -> Vec<String> {
             // const/let/var NAME = ...
             for prefix in &["const ", "let ", "var "] {
                 if let Some(rest) = trimmed.strip_prefix(prefix) {
-                    let parts: Vec<&str> = rest.split(|c: char| c == '=' || c == '(' || c == ' ' || c == ':').collect();
+                    let parts: Vec<&str> = rest.split(['=', '(', ' ', ':']).collect();
                     if let Some(name) = parts.first() {
                         let clean = name.trim().to_string();
                         if clean.len() >= 3 && clean.len() <= 25 {
@@ -731,7 +731,7 @@ fn extract_search_terms(content: &str, lang: &str) -> Vec<String> {
         // Generic: class names for any language
         if trimmed.starts_with("class ") {
             let name = trimmed.strip_prefix("class ").unwrap_or("")
-                .split(|c: char| c == '(' || c == '{' || c == ':')
+                .split(['(', '{', ':'])
                 .next().unwrap_or("").trim().to_string();
             if name.len() >= 3 {
                 terms.insert(name);

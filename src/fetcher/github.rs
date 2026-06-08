@@ -181,7 +181,7 @@ fn extract_repo_name(url: &str) -> String {
 
     // For SSH URLs: git@github.com:user/repo
     if last.contains(':') {
-        last.split(':').last().unwrap_or("unknown").to_string()
+        last.split(':').next_back().unwrap_or("unknown").to_string()
     } else {
         last.to_string()
     }

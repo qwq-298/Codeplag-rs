@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use crate::core::types::{
     AnalyzerConfig, ChunkMatch, CodeFingerprint, FunctionMatch,
     Language, ProjectResult, SimilarityResult, SourceFile,
@@ -6,10 +7,62 @@ use crate::core::types::{
 use crate::fingerprint::winnowing;
 use crate::fingerprint::ast;
 
+/// Content-hash → fingerprint cache to avoid recomputation.
+pub struct FingerprintCache {
+    cache_dir: PathBuf,
+}
+
+impl FingerprintCache {
+    /// Create a new fingerprint cache in the given directory.
+    pub fn new(dir: impl Into<PathBuf>) -> Self {
+        let dir = dir.into();
+        let _ = std::fs::create_dir_all(&dir);
+        Self { cache_dir: dir }
+    }
+
+    /// Compute SHA-256 content hash for cache keying.
+    fn content_hash(content: &str) -> String {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(content.as_bytes());
+        let bytes = h.finalize();
+        bytes.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    /// Try to load a cached fingerprint for the given content.
+    pub fn get(&self, content: &str) -> Option<CodeFingerprint> {
+        let hash = Self::content_hash(content);
+        let path = self.cache_dir.join(format!("{}.json", hash));
+        if path.exists() {
+            if let Ok(data) = std::fs::read_to_string(&path) {
+                if let Ok(fp) = serde_json::from_str::<CodeFingerprint>(&data) {
+                    return Some(fp);
+                }
+            }
+        }
+        None
+    }
+
+    /// Store a fingerprint in the cache.
+    pub fn set(&self, content: &str, fp: &CodeFingerprint) {
+        let hash = Self::content_hash(content);
+        let path = self.cache_dir.join(format!("{}.json", hash));
+        if let Ok(json) = serde_json::to_string(fp) {
+            let _ = std::fs::write(&path, json);
+        }
+    }
+
+    /// Get cache statistics.
+    pub fn stats(&self) -> (usize, usize) {
+        (0, 0) // placeholder
+    }
+}
+
 /// The core similarity analysis engine
 pub struct SimilarityEngine {
     config: AnalyzerConfig,
     fingerprints: HashMap<String, CodeFingerprint>,
+    cache: Option<FingerprintCache>,
 }
 
 impl SimilarityEngine {
@@ -17,91 +70,91 @@ impl SimilarityEngine {
         Self {
             config,
             fingerprints: HashMap::new(),
+            cache: None,
         }
+    }
+
+    /// Enable fingerprint caching.
+    pub fn with_cache(mut self, cache: FingerprintCache) -> Self {
+        self.cache = Some(cache);
+        self
+    }
+
+    /// Compute or retrieve cached fingerprints for a single file.
+    fn fingerprint_file(&self, file: &SourceFile) -> CodeFingerprint {
+        // Try cache first
+        if let Some(ref cache) = self.cache {
+            if let Some(cached) = cache.get(&file.content) {
+                log::info!("Cache hit: {}", file.path);
+                return cached;
+            }
+        }
+
+        // Compute fresh
+        let token_count = file.content.lines().count();
+        let token_freq = winnowing::compute_token_frequency(&file.content, file.language);
+        let winnowing_hashes = winnowing::generate_fingerprints(
+            &file.content, file.language,
+            self.config.k_gram_size, self.config.window_size,
+        );
+        let fingerprint_lines = winnowing::generate_fingerprints_with_lines(
+            &file.content, file.language,
+            self.config.k_gram_size, self.config.window_size,
+        );
+        let all_kgraph_lines = winnowing::generate_all_kgraph_lines(
+            &file.content, file.language, self.config.k_gram_size,
+        );
+        let ast_hashes = ast::generate_ast_hashes(&file.content, file.language)
+            .unwrap_or_default();
+        let cfg_hashes = ast::generate_cfg_hashes(&file.content, file.language);
+        let bag_ast_hashes = ast::generate_bag_ast_hashes(&file.content, file.language);
+        let call_graph_hashes = ast::generate_call_graph_hashes(&file.content, file.language);
+        let def_use_hashes = ast::generate_def_use_hashes(&file.content, file.language);
+        let stmt_hashes = ast::generate_statement_hashes(&file.content, file.language);
+
+        let fp = CodeFingerprint {
+            file_path: file.path.clone(),
+            winnowing_hashes,
+            fingerprint_lines,
+            all_kgraph_lines,
+            ast_hashes,
+            token_freq,
+            cfg_hashes,
+            bag_ast_hashes,
+            call_graph_hashes,
+            def_use_hashes,
+            stmt_hashes,
+            token_count,
+            language: file.language,
+        };
+
+        // Store in cache
+        if let Some(ref cache) = self.cache {
+            cache.set(&file.content, &fp);
+        }
+
+        fp
     }
 
     /// Index a set of source files: generate fingerprints for each
     pub fn index_files(&mut self, files: &[SourceFile]) {
+        let skipped_before = files.len() - self.fingerprints.len();
+        let _ = skipped_before;
+
         for file in files {
-            // Skip files outside size bounds
             if file.size < self.config.min_file_size
                 || file.size > self.config.max_file_size
             {
                 log::debug!("Skipping {} (size: {})", file.path, file.size);
                 continue;
             }
-
-            // Skip unsupported languages
-            if file.language == crate::core::types::Language::Unknown {
+            if file.language == Language::Unknown {
                 log::debug!("Skipping {} (unknown language)", file.path);
                 continue;
             }
 
             log::info!("Indexing: {}", file.path);
-
-            let token_count = file.content.lines().count();
-
-            // Compute token frequency vector
-            let token_freq = winnowing::compute_token_frequency(&file.content, file.language);
-
-            // Generate winnowing fingerprints
-            let winnowing_hashes = winnowing::generate_fingerprints(
-                &file.content,
-                file.language,
-                self.config.k_gram_size,
-                self.config.window_size,
-            );
-
-            // Generate winnowing fingerprints with line info for chunk matching
-            let fingerprint_lines = winnowing::generate_fingerprints_with_lines(
-                &file.content,
-                file.language,
-                self.config.k_gram_size,
-                self.config.window_size,
-            );
-
-            // Generate ALL k-gram hashes with line info for accurate chunk matching
-            let all_kgraph_lines = winnowing::generate_all_kgraph_lines(
-                &file.content,
-                file.language,
-                self.config.k_gram_size,
-            );
-
-            // Generate AST fingerprints
-            let ast_hashes = ast::generate_ast_hashes(&file.content, file.language)
-                .unwrap_or_default();
-
-            // Generate CFG fingerprints
-            let cfg_hashes = ast::generate_cfg_hashes(&file.content, file.language);
-
-            // Generate bag-of-statements AST hashes
-            let bag_ast_hashes = ast::generate_bag_ast_hashes(&file.content, file.language);
-
-            // Generate call graph hashes
-            let call_graph_hashes = ast::generate_call_graph_hashes(&file.content, file.language);
-
-            // Generate def-use graph hashes
-            let def_use_hashes = ast::generate_def_use_hashes(&file.content, file.language);
-
-            // Generate statement trigram hashes
-            let stmt_hashes = ast::generate_statement_hashes(&file.content, file.language);
-
-            let fingerprint = CodeFingerprint {
-                file_path: file.path.clone(),
-                winnowing_hashes,
-                fingerprint_lines,
-                all_kgraph_lines,
-                ast_hashes,
-                token_freq,
-                cfg_hashes,
-                bag_ast_hashes,
-                call_graph_hashes,
-                def_use_hashes,
-                stmt_hashes,
-                token_count,
-                language: file.language,
-            };
-
+            let fingerprint = self.fingerprint_file(file);
             self.fingerprints.insert(file.path.clone(), fingerprint);
         }
 
@@ -621,7 +674,7 @@ fn find_matching_chunks(
             match sub_start {
                 None => sub_start = Some((la, la, lb, lb)),
                 Some((sa, ea, sb, eb)) => {
-                    if la <= ea + 2 && (lb as i64 - sb as i64).abs() as usize <= eb - sb + 3 {
+                    if la <= ea + 2 && (lb as i64 - sb as i64).unsigned_abs() as usize <= eb - sb + 3 {
                         sub_start = Some((sa, la, sb.min(lb), eb.max(lb)));
                     } else {
                         chunks.push(ChunkMatch {
