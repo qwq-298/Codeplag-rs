@@ -6,8 +6,13 @@ use crate::fingerprint::ast;
 use crate::fingerprint::winnowing;
 use std::collections::HashMap;
 use std::path::PathBuf;
-
+///
+/// Core engine for code similarity analysis, including fingerprinting, caching, and comparison logic.
+/// This module implements the main algorithms for generating code fingerprints, comparing them, and finding matching code chunks.
+/// The engine supports both file-level and function-level comparisons, as well as project-level comparisons that aggregate file matches.
+///
 /// Content-hash → fingerprint cache to avoid recomputation.
+/// same content will yield same hash → cache hit → return cached fingerprint
 pub struct FingerprintCache {
     cache_dir: PathBuf,
 }
@@ -66,6 +71,7 @@ pub struct SimilarityEngine {
 }
 
 impl SimilarityEngine {
+    /// Create a new SimilarityEngine with the given configuration.
     pub fn new(config: AnalyzerConfig) -> Self {
         Self { config, fingerprints: HashMap::new(), cache: None }
     }

@@ -1,7 +1,7 @@
 use crate::core::types::Language;
 use sha2::{Digest, Sha256};
 use tree_sitter::{Node, Parser};
-
+/// AST analysis and fingerprint generation for code similarity detection.
 /// Generate AST structural hashes for a source file, including
 /// semantically normalized variants for for→while and match→if equivalence.
 ///

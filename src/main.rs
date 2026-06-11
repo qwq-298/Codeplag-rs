@@ -4,7 +4,7 @@ use codeplag::core::types::AnalyzerConfig;
 use codeplag::engine::{FingerprintCache, SimilarityEngine};
 use codeplag::fetcher::github::GitHubFetcher;
 use std::path::PathBuf;
-
+// entry point for the command-line interface(CLI) + command dispatch
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 

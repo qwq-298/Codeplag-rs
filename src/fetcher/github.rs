@@ -3,7 +3,10 @@ use anyhow::{Context, Result};
 use glob::Pattern;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
+///
+/// A fetcher for retrieving source files from GitHub repositories.
+/// This module provides functionality to clone GitHub repositories, collect source files based on include/exclude patterns, and read file contents for analysis. It supports both fetching from remote repositories and collecting from local directories. The fetcher uses the `git` command-line tool to perform cloning operations and relies on glob patterns to filter relevant source files while excluding tests, minified files, and common vendor directories.
+///
 /// Fetcher for GitHub repositories
 pub struct GitHubFetcher {
     /// Local directory to clone repositories into

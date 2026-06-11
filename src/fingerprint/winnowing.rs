@@ -1,25 +1,38 @@
 use crate::core::types::Language;
 use sha2::{Digest, Sha256};
 
+/// Winnowing-based fingerprinting for code similarity detection.
 /// Token types used for winnowing (language-agnostic)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TokenKind {
+    /// Programming keyword (fn, if, for, let, etc.)
     Keyword,
+    /// User-defined identifier (variable name, function name)
     Identifier,
+    /// Numeric literal
     Number,
+    /// String literal
     String,
+    /// Arithmetic / logical operator
     Operator,
+    /// Punctuation character (brackets, semicolons, etc.)
     Punctuation,
+    /// Whitespace (space, tab)
     Whitespace,
+    /// Comment (line or block)
     Comment,
+    /// Unrecognized token
     Unknown,
 }
 
 /// A token produced by the lexer
 #[derive(Debug, Clone)]
 pub struct Token {
+    /// Token classification
     pub kind: TokenKind,
+    /// Original source text of the token
     pub text: String,
+    /// Line number in the source file (1-based)
     pub line: usize,
 }
 

@@ -1,41 +1,52 @@
 use clap::{Parser, Subcommand};
 
+// Command-line interface definition for Codeplag
+
 /// Codeplag - A GitHub code plagiarism analyzer
 #[derive(Parser, Debug)]
 #[command(name = "codeplag")]
 #[command(version, about, long_about = None)]
 pub struct Cli {
+    /// The subcommand to execute.
     #[command(subcommand)]
     pub command: Commands,
 
     /// Minimum similarity threshold [0.0, 1.0]
     #[arg(short, long, default_value = "0.5")]
     pub threshold: f64,
+    /// -t 0.8 means only report matches with similarity >= 80%
 
     /// k-gram size for winnowing
     #[arg(long, default_value = "5")]
     pub k_gram: usize,
+    /// -k 5 means use 5-grams for winnowing (sequences of 5 tokens)
 
     /// Window size for winnowing
     #[arg(long, default_value = "4")]
     pub window: usize,
+    /// -w 4 means use a window of size 4 for winnowing
 
     /// Enable verbose output
     #[arg(short, long)]
     pub verbose: bool,
 
-    /// GitHub personal access token (for API search)
+    /// GitHub personal access token (for API search).
+    /// GitHub personal access token for authenticated API requests.
+    /// Use `--github-token YOUR_TOKEN` or set the `GITHUB_TOKEN` environment variable.
     #[arg(long, env = "GITHUB_TOKEN")]
     pub github_token: Option<String>,
 
-    /// Compare at function level (extract and compare individual functions)
+    /// Compare at function level (extract and compare individual functions).
+    /// When enabled, tree-sitter extracts individual functions and compares them independently.
+    #[arg(long)]
     #[arg(long)]
     pub functions: bool,
 }
 
+/// Available subcommands for the plagiarism analyzer.
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Analyze a local directory for code similarity
+    /// Analyze a local directory for code similarity.
     Analyze {
         /// Path to the directory to analyze
         #[arg(short, long)]

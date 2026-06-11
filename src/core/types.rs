@@ -1,16 +1,28 @@
 use serde::{Deserialize, Serialize};
 
-/// Supported programming languages for analysis
+/// Supported programming languages for analysis.
+///
+/// Each variant maps to a file extension and a corresponding tree-sitter grammar
+/// for AST-level structural analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Language {
+    /// Rust (`.rs`)
     Rust,
+    /// Python (`.py`)
     Python,
+    /// JavaScript (`.js`)
     JavaScript,
+    /// TypeScript (`.ts`)
     TypeScript,
+    /// Go (`.go`)
     Go,
+    /// C (`.c`, `.h`)
     C,
+    /// C++ (`.cpp`, `.cc`, `.cxx`, `.hpp`)
     Cpp,
+    /// Java (`.java`)
     Java,
+    /// Unknown or unsupported language
     Unknown,
 }
 
@@ -66,8 +78,11 @@ pub struct CodeFingerprint {
     /// Source file path
     pub file_path: String,
     /// Winnowing fingerprints (k-gram hashes)
+    /// Note: These are the selected hashes after applying the winnowing algorithm, which are used for efficient similarity comparison.
     pub winnowing_hashes: Vec<u32>,
     /// Winnowing fingerprints with line numbers for chunk matching
+    /// Note: This includes the line numbers corresponding to each k-gram hash, which allows for more accurate chunk-level similarity detection and reporting.
+    /// need of chunk matching
     pub fingerprint_lines: Vec<(u32, usize)>,
     /// ALL k-gram hashes with line numbers (dense, for accurate chunk matching)
     pub all_kgraph_lines: Vec<(u32, usize)>,
@@ -92,6 +107,7 @@ pub struct CodeFingerprint {
 }
 
 /// A code snippet extracted from a source file (e.g., a function).
+/// need for function-level comparison
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionSnippet {
     /// Function name
@@ -116,6 +132,7 @@ pub struct ProjectResult {
 }
 
 /// Best match for a single file in project A against project B
+/// need for reporting results at file level
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProjectFileMatch {
     /// File path in project A
@@ -132,6 +149,7 @@ pub struct ProjectFileMatch {
 
 /// Result of comparing two functions
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// This struct represents a matched pair of functions from two different files, along with their similarity scores and line ranges. It is used for function-level comparison when the `--functions` flag is enabled in the CLI.
 pub struct FunctionMatch {
     /// Function name in file A
     pub func_a: String,
@@ -155,6 +173,7 @@ pub struct FunctionMatch {
 
 /// A matched chunk of code between two files
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// matched code chunk between two files, with line ranges and similarity score. This is used for detailed reporting of which specific parts of the code are similar, especially when using winnowing-based chunk matching. The line numbers allow us to highlight the matched code in the original source files when presenting results to the user.
 pub struct ChunkMatch {
     /// Start line in file A
     pub line_a: usize,
@@ -187,6 +206,7 @@ pub struct SimilarityResult {
 
 /// Configuration for the plagiarism analyzer
 #[derive(Debug, Clone)]
+/// configure parameters for the plagiarism analyzer, such as k-gram size, window size, similarity threshold, and file size limits. This struct allows us to easily manage and pass around configuration settings throughout the analysis process, and provides default values that can be overridden by command-line arguments or configuration files.
 pub struct AnalyzerConfig {
     /// k-gram size for winnowing (default: 5)
     pub k_gram_size: usize,
@@ -199,7 +219,7 @@ pub struct AnalyzerConfig {
     /// Maximum file size in bytes to analyze
     pub max_file_size: usize,
 }
-
+/// Default configuration values for the analyzer
 impl Default for AnalyzerConfig {
     fn default() -> Self {
         Self {
