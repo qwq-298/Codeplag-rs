@@ -1,11 +1,11 @@
+use crate::core::types::{
+    AnalyzerConfig, ChunkMatch, CodeFingerprint, FunctionMatch, Language, ProjectResult,
+    SimilarityResult, SourceFile,
+};
+use crate::fingerprint::ast;
+use crate::fingerprint::winnowing;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use crate::core::types::{
-    AnalyzerConfig, ChunkMatch, CodeFingerprint, FunctionMatch,
-    Language, ProjectResult, SimilarityResult, SourceFile,
-};
-use crate::fingerprint::winnowing;
-use crate::fingerprint::ast;
 
 /// Content-hash → fingerprint cache to avoid recomputation.
 pub struct FingerprintCache {
@@ -67,11 +67,7 @@ pub struct SimilarityEngine {
 
 impl SimilarityEngine {
     pub fn new(config: AnalyzerConfig) -> Self {
-        Self {
-            config,
-            fingerprints: HashMap::new(),
-            cache: None,
-        }
+        Self { config, fingerprints: HashMap::new(), cache: None }
     }
 
     /// Enable fingerprint caching.
@@ -94,18 +90,23 @@ impl SimilarityEngine {
         let token_count = file.content.lines().count();
         let token_freq = winnowing::compute_token_frequency(&file.content, file.language);
         let winnowing_hashes = winnowing::generate_fingerprints(
-            &file.content, file.language,
-            self.config.k_gram_size, self.config.window_size,
+            &file.content,
+            file.language,
+            self.config.k_gram_size,
+            self.config.window_size,
         );
         let fingerprint_lines = winnowing::generate_fingerprints_with_lines(
-            &file.content, file.language,
-            self.config.k_gram_size, self.config.window_size,
+            &file.content,
+            file.language,
+            self.config.k_gram_size,
+            self.config.window_size,
         );
         let all_kgraph_lines = winnowing::generate_all_kgraph_lines(
-            &file.content, file.language, self.config.k_gram_size,
+            &file.content,
+            file.language,
+            self.config.k_gram_size,
         );
-        let ast_hashes = ast::generate_ast_hashes(&file.content, file.language)
-            .unwrap_or_default();
+        let ast_hashes = ast::generate_ast_hashes(&file.content, file.language).unwrap_or_default();
         let cfg_hashes = ast::generate_cfg_hashes(&file.content, file.language);
         let bag_ast_hashes = ast::generate_bag_ast_hashes(&file.content, file.language);
         let call_graph_hashes = ast::generate_call_graph_hashes(&file.content, file.language);
@@ -142,9 +143,7 @@ impl SimilarityEngine {
         let _ = skipped_before;
 
         for file in files {
-            if file.size < self.config.min_file_size
-                || file.size > self.config.max_file_size
-            {
+            if file.size < self.config.min_file_size || file.size > self.config.max_file_size {
                 log::debug!("Skipping {} (size: {})", file.path, file.size);
                 continue;
             }
@@ -173,9 +172,8 @@ impl SimilarityEngine {
         let n = paths.len();
 
         // Build all index pairs (i, j) where i < j
-        let pairs: Vec<(usize, usize)> = (0..n)
-            .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
-            .collect();
+        let pairs: Vec<(usize, usize)> =
+            (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j))).collect();
 
         let mut results: Vec<SimilarityResult> = pairs
             .par_iter()
@@ -187,33 +185,41 @@ impl SimilarityEngine {
                     return None;
                 }
 
-                let winnowing_score = winnowing::jaccard_similarity(
-                    &fp_a.winnowing_hashes,
-                    &fp_b.winnowing_hashes,
-                );
+                let winnowing_score =
+                    winnowing::jaccard_similarity(&fp_a.winnowing_hashes, &fp_b.winnowing_hashes);
 
-                let ast_score = ast::ast_jaccard_similarity(
-                    &fp_a.ast_hashes,
-                    &fp_b.ast_hashes,
-                );
+                let ast_score = ast::ast_jaccard_similarity(&fp_a.ast_hashes, &fp_b.ast_hashes);
 
-                let token_sim = winnowing::token_cosine_similarity(
-                    &fp_a.token_freq, &fp_b.token_freq,
-                );
+                let token_sim =
+                    winnowing::token_cosine_similarity(&fp_a.token_freq, &fp_b.token_freq);
                 let cfg_sim = ast::cfg_jaccard_similarity(&fp_a.cfg_hashes, &fp_b.cfg_hashes);
-                let bag_sim = ast::bag_ast_jaccard_similarity(&fp_a.bag_ast_hashes, &fp_b.bag_ast_hashes);
-                let cg_sim = ast::call_graph_jaccard_similarity(&fp_a.call_graph_hashes, &fp_b.call_graph_hashes);
-                let du_sim = ast::def_use_jaccard_similarity(&fp_a.def_use_hashes, &fp_b.def_use_hashes);
+                let bag_sim =
+                    ast::bag_ast_jaccard_similarity(&fp_a.bag_ast_hashes, &fp_b.bag_ast_hashes);
+                let cg_sim = ast::call_graph_jaccard_similarity(
+                    &fp_a.call_graph_hashes,
+                    &fp_b.call_graph_hashes,
+                );
+                let du_sim =
+                    ast::def_use_jaccard_similarity(&fp_a.def_use_hashes, &fp_b.def_use_hashes);
                 let st_sim = ast::cfg_jaccard_similarity(&fp_a.stmt_hashes, &fp_b.stmt_hashes);
 
                 let similarity_score = if fp_a.ast_hashes.is_empty() {
-                    0.40 * winnowing_score + 0.20 * bag_sim
-                        + 0.05 * token_sim + 0.10 * cfg_sim + 0.10 * cg_sim
-                        + 0.05 * du_sim + 0.10 * st_sim
+                    0.40 * winnowing_score
+                        + 0.20 * bag_sim
+                        + 0.05 * token_sim
+                        + 0.10 * cfg_sim
+                        + 0.10 * cg_sim
+                        + 0.05 * du_sim
+                        + 0.10 * st_sim
                 } else {
-                    0.35 * winnowing_score + 0.20 * ast_score
-                        + 0.10 * bag_sim + 0.05 * token_sim + 0.10 * cfg_sim
-                        + 0.05 * cg_sim + 0.05 * du_sim + 0.10 * st_sim
+                    0.35 * winnowing_score
+                        + 0.20 * ast_score
+                        + 0.10 * bag_sim
+                        + 0.05 * token_sim
+                        + 0.10 * cfg_sim
+                        + 0.05 * cg_sim
+                        + 0.05 * du_sim
+                        + 0.10 * st_sim
                 };
 
                 if similarity_score >= self.config.threshold {
@@ -294,28 +300,38 @@ impl SimilarityEngine {
                     &fp.winnowing_hashes,
                 );
 
-                let ast_score = ast::ast_jaccard_similarity(
-                    &target_fp.ast_hashes,
-                    &fp.ast_hashes,
-                );
+                let ast_score = ast::ast_jaccard_similarity(&target_fp.ast_hashes, &fp.ast_hashes);
 
-                let token_sim = winnowing::token_cosine_similarity(
-                    &target_fp.token_freq, &fp.token_freq,
-                );
+                let token_sim =
+                    winnowing::token_cosine_similarity(&target_fp.token_freq, &fp.token_freq);
                 let cfg_sim = ast::cfg_jaccard_similarity(&target_fp.cfg_hashes, &fp.cfg_hashes);
-                let bag_sim = ast::bag_ast_jaccard_similarity(&target_fp.bag_ast_hashes, &fp.bag_ast_hashes);
-                let cg_sim = ast::call_graph_jaccard_similarity(&target_fp.call_graph_hashes, &fp.call_graph_hashes);
-                let du_sim = ast::def_use_jaccard_similarity(&target_fp.def_use_hashes, &fp.def_use_hashes);
+                let bag_sim =
+                    ast::bag_ast_jaccard_similarity(&target_fp.bag_ast_hashes, &fp.bag_ast_hashes);
+                let cg_sim = ast::call_graph_jaccard_similarity(
+                    &target_fp.call_graph_hashes,
+                    &fp.call_graph_hashes,
+                );
+                let du_sim =
+                    ast::def_use_jaccard_similarity(&target_fp.def_use_hashes, &fp.def_use_hashes);
                 let st_sim = ast::cfg_jaccard_similarity(&target_fp.stmt_hashes, &fp.stmt_hashes);
 
                 let similarity_score = if target_fp.ast_hashes.is_empty() {
-                    0.40 * winnowing_score + 0.20 * bag_sim
-                        + 0.05 * token_sim + 0.10 * cfg_sim + 0.10 * cg_sim
-                        + 0.05 * du_sim + 0.10 * st_sim
+                    0.40 * winnowing_score
+                        + 0.20 * bag_sim
+                        + 0.05 * token_sim
+                        + 0.10 * cfg_sim
+                        + 0.10 * cg_sim
+                        + 0.05 * du_sim
+                        + 0.10 * st_sim
                 } else {
-                    0.35 * winnowing_score + 0.20 * ast_score
-                        + 0.10 * bag_sim + 0.05 * token_sim + 0.10 * cfg_sim
-                        + 0.05 * cg_sim + 0.05 * du_sim + 0.10 * st_sim
+                    0.35 * winnowing_score
+                        + 0.20 * ast_score
+                        + 0.10 * bag_sim
+                        + 0.05 * token_sim
+                        + 0.10 * cfg_sim
+                        + 0.05 * cg_sim
+                        + 0.05 * du_sim
+                        + 0.10 * st_sim
                 };
 
                 if similarity_score >= self.config.threshold {
@@ -357,8 +373,8 @@ impl SimilarityEngine {
         project_a: &[SourceFile],
         project_b: &[SourceFile],
     ) -> ProjectResult {
-        use rayon::prelude::*;
         use crate::core::types::{ProjectFileMatch, ProjectResult};
+        use rayon::prelude::*;
 
         let mut file_matches: Vec<ProjectFileMatch> = project_a
             .par_iter()
@@ -371,17 +387,25 @@ impl SimilarityEngine {
                 let fp_a = CodeFingerprint {
                     file_path: file_a.path.clone(),
                     winnowing_hashes: winnowing::generate_fingerprints(
-                        &file_a.content, file_a.language,
-                        self.config.k_gram_size, self.config.window_size,
+                        &file_a.content,
+                        file_a.language,
+                        self.config.k_gram_size,
+                        self.config.window_size,
                     ),
                     fingerprint_lines: Vec::new(),
                     all_kgraph_lines: Vec::new(),
                     ast_hashes: ast::generate_ast_hashes(&file_a.content, file_a.language)
                         .unwrap_or_default(),
-                    token_freq: winnowing::compute_token_frequency(&file_a.content, file_a.language),
+                    token_freq: winnowing::compute_token_frequency(
+                        &file_a.content,
+                        file_a.language,
+                    ),
                     cfg_hashes: ast::generate_cfg_hashes(&file_a.content, file_a.language),
                     bag_ast_hashes: ast::generate_bag_ast_hashes(&file_a.content, file_a.language),
-                    call_graph_hashes: ast::generate_call_graph_hashes(&file_a.content, file_a.language),
+                    call_graph_hashes: ast::generate_call_graph_hashes(
+                        &file_a.content,
+                        file_a.language,
+                    ),
                     def_use_hashes: ast::generate_def_use_hashes(&file_a.content, file_a.language),
                     stmt_hashes: ast::generate_statement_hashes(&file_a.content, file_a.language),
                     token_count: file_a.content.lines().count(),
@@ -402,39 +426,73 @@ impl SimilarityEngine {
                     let fp_b = CodeFingerprint {
                         file_path: file_b.path.clone(),
                         winnowing_hashes: winnowing::generate_fingerprints(
-                            &file_b.content, file_b.language,
-                            self.config.k_gram_size, self.config.window_size,
+                            &file_b.content,
+                            file_b.language,
+                            self.config.k_gram_size,
+                            self.config.window_size,
                         ),
                         fingerprint_lines: Vec::new(),
                         all_kgraph_lines: Vec::new(),
                         ast_hashes: ast::generate_ast_hashes(&file_b.content, file_b.language)
                             .unwrap_or_default(),
-                        token_freq: winnowing::compute_token_frequency(&file_b.content, file_b.language),
+                        token_freq: winnowing::compute_token_frequency(
+                            &file_b.content,
+                            file_b.language,
+                        ),
                         cfg_hashes: ast::generate_cfg_hashes(&file_b.content, file_b.language),
-                        bag_ast_hashes: ast::generate_bag_ast_hashes(&file_b.content, file_b.language),
-                        call_graph_hashes: ast::generate_call_graph_hashes(&file_b.content, file_b.language),
-                        def_use_hashes: ast::generate_def_use_hashes(&file_b.content, file_b.language),
-                        stmt_hashes: ast::generate_statement_hashes(&file_b.content, file_b.language),
+                        bag_ast_hashes: ast::generate_bag_ast_hashes(
+                            &file_b.content,
+                            file_b.language,
+                        ),
+                        call_graph_hashes: ast::generate_call_graph_hashes(
+                            &file_b.content,
+                            file_b.language,
+                        ),
+                        def_use_hashes: ast::generate_def_use_hashes(
+                            &file_b.content,
+                            file_b.language,
+                        ),
+                        stmt_hashes: ast::generate_statement_hashes(
+                            &file_b.content,
+                            file_b.language,
+                        ),
                         token_count: file_b.content.lines().count(),
                         language: file_b.language,
                     };
 
                     let ws = winnowing::jaccard_similarity(
-                        &fp_a.winnowing_hashes, &fp_b.winnowing_hashes,
+                        &fp_a.winnowing_hashes,
+                        &fp_b.winnowing_hashes,
                     );
                     let as_ = ast::ast_jaccard_similarity(&fp_a.ast_hashes, &fp_b.ast_hashes);
                     let ts = winnowing::token_cosine_similarity(&fp_a.token_freq, &fp_b.token_freq);
                     let cs = ast::cfg_jaccard_similarity(&fp_a.cfg_hashes, &fp_b.cfg_hashes);
-                    let bs = ast::bag_ast_jaccard_similarity(&fp_a.bag_ast_hashes, &fp_b.bag_ast_hashes);
-                    let cgs = ast::call_graph_jaccard_similarity(&fp_a.call_graph_hashes, &fp_b.call_graph_hashes);
-                    let dus = ast::def_use_jaccard_similarity(&fp_a.def_use_hashes, &fp_b.def_use_hashes);
+                    let bs =
+                        ast::bag_ast_jaccard_similarity(&fp_a.bag_ast_hashes, &fp_b.bag_ast_hashes);
+                    let cgs = ast::call_graph_jaccard_similarity(
+                        &fp_a.call_graph_hashes,
+                        &fp_b.call_graph_hashes,
+                    );
+                    let dus =
+                        ast::def_use_jaccard_similarity(&fp_a.def_use_hashes, &fp_b.def_use_hashes);
                     let sts = ast::cfg_jaccard_similarity(&fp_a.stmt_hashes, &fp_b.stmt_hashes);
                     let sim = if fp_a.ast_hashes.is_empty() {
-                        0.27 * ws + 0.17 * bs + 0.13 * ts + 0.13 * cs
-                            + 0.10 * cgs + 0.10 * dus + 0.10 * sts
+                        0.27 * ws
+                            + 0.17 * bs
+                            + 0.13 * ts
+                            + 0.13 * cs
+                            + 0.10 * cgs
+                            + 0.10 * dus
+                            + 0.10 * sts
                     } else {
-                        0.22 * ws + 0.18 * as_ + 0.10 * bs + 0.10 * ts + 0.12 * cs
-                            + 0.10 * cgs + 0.10 * dus + 0.08 * sts
+                        0.22 * ws
+                            + 0.18 * as_
+                            + 0.10 * bs
+                            + 0.10 * ts
+                            + 0.12 * cs
+                            + 0.10 * cgs
+                            + 0.10 * dus
+                            + 0.08 * sts
                     };
 
                     if sim > best_score {
@@ -479,10 +537,7 @@ impl SimilarityEngine {
             sum_matches / max_files as f64
         };
 
-        ProjectResult {
-            project_score,
-            file_matches,
-        }
+        ProjectResult { project_score, file_matches }
     }
 
     /// Compare functions across files and return function-level matches.
@@ -510,15 +565,20 @@ impl SimilarityEngine {
             let fp = CodeFingerprint {
                 file_path: file_path.clone(),
                 winnowing_hashes: winnowing::generate_fingerprints(
-                    &func.content, func.language,
-                    self.config.k_gram_size, self.config.window_size,
+                    &func.content,
+                    func.language,
+                    self.config.k_gram_size,
+                    self.config.window_size,
                 ),
                 fingerprint_lines: winnowing::generate_fingerprints_with_lines(
-                    &func.content, func.language,
-                    self.config.k_gram_size, self.config.window_size,
+                    &func.content,
+                    func.language,
+                    self.config.k_gram_size,
+                    self.config.window_size,
                 ),
                 all_kgraph_lines: winnowing::generate_all_kgraph_lines(
-                    &func.content, func.language,
+                    &func.content,
+                    func.language,
                     self.config.k_gram_size,
                 ),
                 ast_hashes: ast::generate_ast_hashes(&func.content, func.language)
@@ -539,9 +599,8 @@ impl SimilarityEngine {
         use rayon::prelude::*;
 
         let n = func_fps.len();
-        let pairs: Vec<(usize, usize)> = (0..n)
-            .flat_map(|i| ((i + 1)..n).map(move |j| (i, j)))
-            .collect();
+        let pairs: Vec<(usize, usize)> =
+            (0..n).flat_map(|i| ((i + 1)..n).map(move |j| (i, j))).collect();
 
         let mut results: Vec<FunctionMatch> = pairs
             .par_iter()
@@ -553,29 +612,39 @@ impl SimilarityEngine {
                     return None;
                 }
 
-                let winnowing_score = winnowing::jaccard_similarity(
-                    &fp_a.winnowing_hashes, &fp_b.winnowing_hashes,
-                );
-                let ast_score = ast::ast_jaccard_similarity(
-                    &fp_a.ast_hashes, &fp_b.ast_hashes,
-                );
-                let token_sim = winnowing::token_cosine_similarity(
-                    &fp_a.token_freq, &fp_b.token_freq,
-                );
+                let winnowing_score =
+                    winnowing::jaccard_similarity(&fp_a.winnowing_hashes, &fp_b.winnowing_hashes);
+                let ast_score = ast::ast_jaccard_similarity(&fp_a.ast_hashes, &fp_b.ast_hashes);
+                let token_sim =
+                    winnowing::token_cosine_similarity(&fp_a.token_freq, &fp_b.token_freq);
                 let cfg_sim = ast::cfg_jaccard_similarity(&fp_a.cfg_hashes, &fp_b.cfg_hashes);
-                let bag_sim = ast::bag_ast_jaccard_similarity(&fp_a.bag_ast_hashes, &fp_b.bag_ast_hashes);
-                let cg_sim = ast::call_graph_jaccard_similarity(&fp_a.call_graph_hashes, &fp_b.call_graph_hashes);
-                let du_sim = ast::def_use_jaccard_similarity(&fp_a.def_use_hashes, &fp_b.def_use_hashes);
+                let bag_sim =
+                    ast::bag_ast_jaccard_similarity(&fp_a.bag_ast_hashes, &fp_b.bag_ast_hashes);
+                let cg_sim = ast::call_graph_jaccard_similarity(
+                    &fp_a.call_graph_hashes,
+                    &fp_b.call_graph_hashes,
+                );
+                let du_sim =
+                    ast::def_use_jaccard_similarity(&fp_a.def_use_hashes, &fp_b.def_use_hashes);
                 let st_sim = ast::cfg_jaccard_similarity(&fp_a.stmt_hashes, &fp_b.stmt_hashes);
 
                 let similarity_score = if fp_a.ast_hashes.is_empty() {
-                    0.40 * winnowing_score + 0.20 * bag_sim
-                        + 0.05 * token_sim + 0.10 * cfg_sim + 0.10 * cg_sim
-                        + 0.05 * du_sim + 0.10 * st_sim
+                    0.40 * winnowing_score
+                        + 0.20 * bag_sim
+                        + 0.05 * token_sim
+                        + 0.10 * cfg_sim
+                        + 0.10 * cg_sim
+                        + 0.05 * du_sim
+                        + 0.10 * st_sim
                 } else {
-                    0.35 * winnowing_score + 0.20 * ast_score
-                        + 0.10 * bag_sim + 0.05 * token_sim + 0.10 * cfg_sim
-                        + 0.05 * cg_sim + 0.05 * du_sim + 0.10 * st_sim
+                    0.35 * winnowing_score
+                        + 0.20 * ast_score
+                        + 0.10 * bag_sim
+                        + 0.05 * token_sim
+                        + 0.10 * cfg_sim
+                        + 0.05 * cg_sim
+                        + 0.05 * du_sim
+                        + 0.10 * st_sim
                 };
 
                 if similarity_score >= self.config.threshold {
@@ -611,10 +680,7 @@ impl SimilarityEngine {
 /// Uses a voting mechanism: each matching k-gram hash "votes" for an offset
 /// (line_b - line_a). The offset with the most votes identifies the likely
 /// aligned code block, even when functions are reordered.
-fn find_matching_chunks(
-    fp_a: &CodeFingerprint,
-    fp_b: &CodeFingerprint,
-) -> Vec<ChunkMatch> {
+fn find_matching_chunks(fp_a: &CodeFingerprint, fp_b: &CodeFingerprint) -> Vec<ChunkMatch> {
     use crate::core::types::ChunkMatch;
     use std::collections::HashMap;
 
@@ -674,7 +740,9 @@ fn find_matching_chunks(
             match sub_start {
                 None => sub_start = Some((la, la, lb, lb)),
                 Some((sa, ea, sb, eb)) => {
-                    if la <= ea + 2 && (lb as i64 - sb as i64).unsigned_abs() as usize <= eb - sb + 3 {
+                    if la <= ea + 2
+                        && (lb as i64 - sb as i64).unsigned_abs() as usize <= eb - sb + 3
+                    {
                         sub_start = Some((sa, la, sb.min(lb), eb.max(lb)));
                     } else {
                         chunks.push(ChunkMatch {
@@ -702,12 +770,14 @@ fn find_matching_chunks(
 
     // Compute actual similarity score for each chunk
     for chunk in &mut chunks {
-        let hashes_a: std::collections::HashSet<u32> = fp_a.all_kgraph_lines
+        let hashes_a: std::collections::HashSet<u32> = fp_a
+            .all_kgraph_lines
             .iter()
             .filter(|(_, l)| *l >= chunk.line_a && *l <= chunk.line_end_a)
             .map(|(h, _)| *h)
             .collect();
-        let hashes_b: std::collections::HashSet<u32> = fp_b.all_kgraph_lines
+        let hashes_b: std::collections::HashSet<u32> = fp_b
+            .all_kgraph_lines
             .iter()
             .filter(|(_, l)| *l >= chunk.line_b && *l <= chunk.line_end_b)
             .map(|(h, _)| *h)
@@ -715,11 +785,7 @@ fn find_matching_chunks(
 
         let intersection = hashes_a.intersection(&hashes_b).count();
         let union = hashes_a.len() + hashes_b.len() - intersection;
-        chunk.score = if union > 0 {
-            intersection as f64 / union as f64
-        } else {
-            0.0
-        };
+        chunk.score = if union > 0 { intersection as f64 / union as f64 } else { 0.0 };
     }
 
     // Sort by score descending, then by size
@@ -732,8 +798,10 @@ fn find_matching_chunks(
 
     // Deduplicate by line range
     chunks.dedup_by(|a, b| {
-        a.line_a == b.line_a && a.line_end_a == b.line_end_a
-            && a.line_b == b.line_b && a.line_end_b == b.line_end_b
+        a.line_a == b.line_a
+            && a.line_end_a == b.line_end_a
+            && a.line_b == b.line_b
+            && a.line_end_b == b.line_end_b
     });
     chunks.truncate(5);
 

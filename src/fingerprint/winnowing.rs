@@ -1,5 +1,5 @@
-use sha2::{Digest, Sha256};
 use crate::core::types::Language;
+use sha2::{Digest, Sha256};
 
 /// Token types used for winnowing (language-agnostic)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -129,12 +129,9 @@ pub fn tokenize(source: &str, _language: Language) -> Vec<Token> {
                 });
             }
             ' ' | '\t' => {
-                let ws: String = chars.by_ref().take_while(|c| c.is_whitespace() && *c != '\n').collect();
-                tokens.push(Token {
-                    kind: TokenKind::Whitespace,
-                    text: ws,
-                    line: start_line,
-                });
+                let ws: String =
+                    chars.by_ref().take_while(|c| c.is_whitespace() && *c != '\n').collect();
+                tokens.push(Token { kind: TokenKind::Whitespace, text: ws, line: start_line });
             }
             '\r' => {
                 // Skip carriage return — line endings are already normalized to \n
@@ -158,7 +155,9 @@ pub fn tokenize(source: &str, _language: Language) -> Vec<Token> {
                             comment.push(chars.next().unwrap());
                             break;
                         }
-                        if c == '\n' { line += 1; }
+                        if c == '\n' {
+                            line += 1;
+                        }
                     }
                     tokens.push(Token {
                         kind: TokenKind::Comment,
@@ -179,38 +178,29 @@ pub fn tokenize(source: &str, _language: Language) -> Vec<Token> {
                 while let Some(c) = chars.next() {
                     s.push(c);
                     if c == '\\' {
-                        if let Some(nc) = chars.next() { s.push(nc); }
+                        if let Some(nc) = chars.next() {
+                            s.push(nc);
+                        }
                     } else if c == '"' {
                         break;
                     }
-                    if c == '\n' { line += 1; }
+                    if c == '\n' {
+                        line += 1;
+                    }
                 }
-                tokens.push(Token {
-                    kind: TokenKind::String,
-                    text: s,
-                    line: start_line,
-                });
+                tokens.push(Token { kind: TokenKind::String, text: s, line: start_line });
             }
             '0'..='9' => {
-                let num: String = chars.by_ref().take_while(|c| c.is_alphanumeric() || *c == '.').collect();
-                tokens.push(Token {
-                    kind: TokenKind::Number,
-                    text: num,
-                    line: start_line,
-                });
+                let num: String =
+                    chars.by_ref().take_while(|c| c.is_alphanumeric() || *c == '.').collect();
+                tokens.push(Token { kind: TokenKind::Number, text: num, line: start_line });
             }
             c if c.is_alphabetic() || c == '_' => {
-                let word: String = chars.by_ref().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
-                let kind = if is_keyword(&word) {
-                    TokenKind::Keyword
-                } else {
-                    TokenKind::Identifier
-                };
-                tokens.push(Token {
-                    kind,
-                    text: word,
-                    line: start_line,
-                });
+                let word: String =
+                    chars.by_ref().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                let kind =
+                    if is_keyword(&word) { TokenKind::Keyword } else { TokenKind::Identifier };
+                tokens.push(Token { kind, text: word, line: start_line });
             }
             _ => {
                 chars.next();
@@ -229,15 +219,61 @@ pub fn tokenize(source: &str, _language: Language) -> Vec<Token> {
 fn is_keyword(word: &str) -> bool {
     matches!(
         word,
-        "if" | "else" | "for" | "while" | "do" | "switch" | "case"
-            | "return" | "break" | "continue" | "fn" | "def" | "function"
-            | "class" | "struct" | "enum" | "impl" | "trait" | "interface"
-            | "let" | "var" | "const" | "mut" | "static" | "pub" | "private"
-            | "public" | "protected" | "use" | "import" | "mod" | "package"
-            | "match" | "try" | "catch" | "finally" | "throw" | "new"
-            | "this" | "self" | "super" | "async" | "await" | "yield"
-            | "true" | "false" | "null" | "None" | "nil" | "type" | "typeof"
-            | "extends" | "implements" | "abstract" | "virtual" | "override"
+        "if" | "else"
+            | "for"
+            | "while"
+            | "do"
+            | "switch"
+            | "case"
+            | "return"
+            | "break"
+            | "continue"
+            | "fn"
+            | "def"
+            | "function"
+            | "class"
+            | "struct"
+            | "enum"
+            | "impl"
+            | "trait"
+            | "interface"
+            | "let"
+            | "var"
+            | "const"
+            | "mut"
+            | "static"
+            | "pub"
+            | "private"
+            | "public"
+            | "protected"
+            | "use"
+            | "import"
+            | "mod"
+            | "package"
+            | "match"
+            | "try"
+            | "catch"
+            | "finally"
+            | "throw"
+            | "new"
+            | "this"
+            | "self"
+            | "super"
+            | "async"
+            | "await"
+            | "yield"
+            | "true"
+            | "false"
+            | "null"
+            | "None"
+            | "nil"
+            | "type"
+            | "typeof"
+            | "extends"
+            | "implements"
+            | "abstract"
+            | "virtual"
+            | "override"
     )
 }
 
@@ -257,7 +293,7 @@ pub fn compute_k_gram_hashes(tokens: &[Token], k: usize) -> Vec<u32> {
                 h.finalize()[0]
             }
             TokenKind::Identifier => 0xFF, // placeholder: all identifiers look the same
-            _ => t.kind as u8, // numbers, strings, etc.
+            _ => t.kind as u8,             // numbers, strings, etc.
         })
         .collect();
 
@@ -292,11 +328,8 @@ pub fn winnow(hashes: &[u32], window_size: usize) -> Vec<u32> {
             continue;
         }
 
-        let (min_idx_offset, &min_hash) = window
-            .iter()
-            .enumerate()
-            .min_by_key(|&(_, &h)| h)
-            .unwrap();
+        let (min_idx_offset, &min_hash) =
+            window.iter().enumerate().min_by_key(|&(_, &h)| h).unwrap();
 
         let min_pos = (i + min_idx_offset) as isize;
 
@@ -330,19 +363,12 @@ pub fn generate_fingerprints_with_lines(
     let tokens = tokenize(source, language);
     let (hashes, line_map) = compute_k_gram_hashes_with_lines(&tokens, k);
     let selected_indices = winnow_indices(&hashes, w);
-    selected_indices
-        .into_iter()
-        .map(|idx| (hashes[idx], line_map[idx]))
-        .collect()
+    selected_indices.into_iter().map(|idx| (hashes[idx], line_map[idx])).collect()
 }
 
 /// Generate ALL k-gram hashes with line numbers (dense — for accurate chunk matching).
 /// Returns (hash, line_number) for every k-gram in the file.
-pub fn generate_all_kgraph_lines(
-    source: &str,
-    language: Language,
-    k: usize,
-) -> Vec<(u32, usize)> {
+pub fn generate_all_kgraph_lines(source: &str, language: Language, k: usize) -> Vec<(u32, usize)> {
     let tokens = tokenize(source, language);
     let (hashes, line_map) = compute_k_gram_hashes_with_lines(&tokens, k);
     hashes.into_iter().zip(line_map).collect()
@@ -462,11 +488,7 @@ fn winnow_indices(hashes: &[u32], window_size: usize) -> Vec<usize> {
             continue;
         }
 
-        let (min_idx_offset, _) = window
-            .iter()
-            .enumerate()
-            .min_by_key(|&(_, &h)| h)
-            .unwrap();
+        let (min_idx_offset, _) = window.iter().enumerate().min_by_key(|&(_, &h)| h).unwrap();
 
         let min_pos = (i + min_idx_offset) as isize;
 
@@ -585,7 +607,7 @@ mod tests {
         let tokens = tokenize(code, Language::Rust);
         let kinds: Vec<TokenKind> = tokens.iter().map(|t| t.kind).collect();
         assert!(kinds.contains(&TokenKind::Keyword)); // fn, let
-        assert!(kinds.contains(&TokenKind::Number));  // 42
+        assert!(kinds.contains(&TokenKind::Number)); // 42
     }
 
     #[test]
@@ -678,8 +700,10 @@ mod tests {
         let winnowed = winnow(&hashes, 3);
         // Should produce fewer hashes than input windows
         let expected_windows = hashes.len().saturating_sub(2); // window_size=3 → num_windows
-        assert!(winnowed.len() <= expected_windows,
-            "Winnowing should not produce more fingerprints than windows");
+        assert!(
+            winnowed.len() <= expected_windows,
+            "Winnowing should not produce more fingerprints than windows"
+        );
     }
 
     // ── Token Frequency ────────────────────────────────────────
@@ -696,8 +720,11 @@ mod tests {
         let code = "fn main() { let x = 42; let y = 100; }";
         let freq = compute_token_frequency(code, Language::Rust);
         let sum: f64 = freq.iter().sum();
-        assert!((sum - 1.0).abs() < 1e-10 || sum == 0.0,
-            "Frequency sum should be 1.0 or 0.0, got {}", sum);
+        assert!(
+            (sum - 1.0).abs() < 1e-10 || sum == 0.0,
+            "Frequency sum should be 1.0 or 0.0, got {}",
+            sum
+        );
     }
 
     #[test]
@@ -752,8 +779,7 @@ mod tests {
         let a = vec![1, 2, 3, 4];
         let b = vec![3, 4, 5, 6];
         let sim = jaccard_similarity(&a, &b);
-        assert!((sim - 2.0 / 6.0).abs() < 1e-10,
-            "Expected 2/6, got {}", sim);
+        assert!((sim - 2.0 / 6.0).abs() < 1e-10, "Expected 2/6, got {}", sim);
     }
 
     #[test]
@@ -768,8 +794,10 @@ mod tests {
     fn test_jaccard_with_duplicates() {
         let a = vec![1, 1, 2, 2, 3];
         let b = vec![1, 2, 3];
-        assert!((jaccard_similarity(&a, &b) - 1.0).abs() < 1e-10,
-            "Duplicates should not affect Jaccard result");
+        assert!(
+            (jaccard_similarity(&a, &b) - 1.0).abs() < 1e-10,
+            "Duplicates should not affect Jaccard result"
+        );
     }
 
     // ── generate_fingerprints_with_lines ───────────────────────

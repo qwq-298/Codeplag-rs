@@ -77,7 +77,6 @@ pub enum Commands {
         /// Path to a source file or project directory
         #[arg(short, long)]
         path: Option<String>,
-        
 
         /// GitHub repo URL to fetch and search against
         #[arg(short, long)]

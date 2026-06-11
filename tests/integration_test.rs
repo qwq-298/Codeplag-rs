@@ -16,12 +16,7 @@ fn load_fixture(category: &str, filename: &str) -> SourceFile {
     let ext = filename.rsplit('.').next().unwrap_or("rs");
     let language = Language::from_extension(ext);
     let size = content.len();
-    SourceFile {
-        path,
-        content,
-        language,
-        size,
-    }
+    SourceFile { path, content, language, size }
 }
 
 fn default_config() -> AnalyzerConfig {
@@ -33,10 +28,7 @@ fn default_config() -> AnalyzerConfig {
 #[test]
 fn identical_files_have_perfect_similarity() {
     let file = load_fixture("original", "sort_rust.rs");
-    let clone = SourceFile {
-        path: "clone.rs".into(),
-        ..file.clone()
-    };
+    let clone = SourceFile { path: "clone.rs".into(), ..file.clone() };
 
     let mut engine = SimilarityEngine::new(default_config());
     engine.index_files(&[file, clone]);
@@ -122,10 +114,7 @@ fn cross_language_files_not_compared() {
     engine.index_files(&[rust_file, python_file]);
     let results = engine.compare_all();
 
-    assert!(
-        results.is_empty(),
-        "Cross-language files should not be compared"
-    );
+    assert!(results.is_empty(), "Cross-language files should not be compared");
 }
 
 #[test]
@@ -184,14 +173,10 @@ fn winnowing_score_separate_from_ast_score() {
 
 #[test]
 fn project_comparison_original_vs_renamed() {
-    let project_a = vec![
-        load_fixture("original", "sort_rust.rs"),
-        load_fixture("original", "sort_python.py"),
-    ];
-    let project_b = vec![
-        load_fixture("renamed", "sort_rust.rs"),
-        load_fixture("renamed", "sort_python.py"),
-    ];
+    let project_a =
+        vec![load_fixture("original", "sort_rust.rs"), load_fixture("original", "sort_python.py")];
+    let project_b =
+        vec![load_fixture("renamed", "sort_rust.rs"), load_fixture("renamed", "sort_python.py")];
 
     let engine = SimilarityEngine::new(default_config());
     let result = engine.compare_projects(&project_a, &project_b);
@@ -201,18 +186,13 @@ fn project_comparison_original_vs_renamed() {
         "Project score for renamed code should be >30%, got {:.2}%",
         result.project_score * 100.0
     );
-    assert!(
-        !result.file_matches.is_empty(),
-        "Should find file matches between projects"
-    );
+    assert!(!result.file_matches.is_empty(), "Should find file matches between projects");
 }
 
 #[test]
 fn project_comparison_original_vs_unrelated() {
-    let project_a = vec![
-        load_fixture("original", "sort_rust.rs"),
-        load_fixture("original", "sort_python.py"),
-    ];
+    let project_a =
+        vec![load_fixture("original", "sort_rust.rs"), load_fixture("original", "sort_python.py")];
     let project_b = vec![
         load_fixture("unrelated", "utils_rust.rs"),
         load_fixture("unrelated", "utils_python.py"),
@@ -232,10 +212,8 @@ fn project_comparison_original_vs_unrelated() {
 fn project_score_coverage_aware() {
     // If project A has 2 files and project B has 4 files (2 unrelated),
     // the score should be penalized because only 2/4 files can match.
-    let project_a = vec![
-        load_fixture("original", "sort_rust.rs"),
-        load_fixture("original", "sort_python.py"),
-    ];
+    let project_a =
+        vec![load_fixture("original", "sort_rust.rs"), load_fixture("original", "sort_python.py")];
     let project_b = vec![
         load_fixture("renamed", "sort_rust.rs"),
         load_fixture("renamed", "sort_python.py"),
@@ -270,10 +248,7 @@ fn high_threshold_filters_results() {
     let results = engine.compare_all();
 
     // Renamed code should be filtered out at 0.99 threshold
-    assert!(
-        results.is_empty(),
-        "Renamed code should be filtered at 0.99 threshold"
-    );
+    assert!(results.is_empty(), "Renamed code should be filtered at 0.99 threshold");
 }
 
 #[test]
@@ -325,10 +300,7 @@ fn compare_against_with_indexed_files() {
     let results = engine.compare_against(&target_file);
 
     assert!(!results.is_empty(), "Should find match against indexed files");
-    assert!(
-        results[0].similarity_score > 0.3,
-        "Should have reasonable similarity"
-    );
+    assert!(results[0].similarity_score > 0.3, "Should have reasonable similarity");
 }
 
 #[test]
@@ -364,10 +336,7 @@ fn chunk_matches_present_for_similar_files() {
     let results = engine.compare_all();
 
     if let Some(r) = results.first() {
-        assert!(
-            !r.matched_chunks.is_empty(),
-            "Similar files should have matched chunks"
-        );
+        assert!(!r.matched_chunks.is_empty(), "Similar files should have matched chunks");
         assert!(
             r.matched_chunks.len() <= 5,
             "Chunks should be capped at 5, got {}",
@@ -387,18 +356,9 @@ fn chunk_lines_are_valid() {
 
     for r in &results {
         for chunk in &r.matched_chunks {
-            assert!(
-                chunk.line_a <= chunk.line_end_a,
-                "Chunk line_a must be <= line_end_a"
-            );
-            assert!(
-                chunk.line_b <= chunk.line_end_b,
-                "Chunk line_b must be <= line_end_b"
-            );
-            assert!(
-                chunk.score >= 0.0 && chunk.score <= 1.0,
-                "Chunk score must be in [0, 1]"
-            );
+            assert!(chunk.line_a <= chunk.line_end_a, "Chunk line_a must be <= line_end_a");
+            assert!(chunk.line_b <= chunk.line_end_b, "Chunk line_b must be <= line_end_b");
+            assert!(chunk.score >= 0.0 && chunk.score <= 1.0, "Chunk score must be in [0, 1]");
         }
     }
 }
@@ -417,18 +377,12 @@ fn all_seven_languages_can_be_analyzed() {
         ("sort_java.java", "original"),
     ];
 
-    let files: Vec<SourceFile> = languages
-        .into_iter()
-        .map(|(name, cat)| load_fixture(cat, name))
-        .collect();
+    let files: Vec<SourceFile> =
+        languages.into_iter().map(|(name, cat)| load_fixture(cat, name)).collect();
 
     let mut engine = SimilarityEngine::new(default_config());
     engine.index_files(&files);
 
     // All 7 files should be indexed (no Unknown language)
-    assert_eq!(
-        engine.indexed_count(),
-        7,
-        "All 7 languages should be indexed"
-    );
+    assert_eq!(engine.indexed_count(), 7, "All 7 languages should be indexed");
 }

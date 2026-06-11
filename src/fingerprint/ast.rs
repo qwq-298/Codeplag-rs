@@ -1,6 +1,6 @@
+use crate::core::types::Language;
 use sha2::{Digest, Sha256};
 use tree_sitter::{Node, Parser};
-use crate::core::types::Language;
 
 /// Generate AST structural hashes for a source file, including
 /// semantically normalized variants for for→while and match→if equivalence.
@@ -55,8 +55,10 @@ fn collect_semantic_hashes(node: &Node, source: &str, hashes: &mut Vec<u64>) {
     let kind = node.kind();
 
     // For for_in_expression / for_statement → emit normalized while-loop hash
-    if kind == "for_expression" || kind == "for_statement"
-        || kind == "for_in_expression" || kind == "for_in_statement"
+    if kind == "for_expression"
+        || kind == "for_statement"
+        || kind == "for_in_expression"
+        || kind == "for_in_statement"
     {
         if let Some(norm_hash) = normalize_for_to_while(node, source) {
             hashes.push(norm_hash);
@@ -87,9 +89,7 @@ fn normalize_for_to_while(node: &Node, _source: &str) -> Option<u64> {
     hasher.update(b"while_statement");
 
     // Find the range expression and loop variable
-    let children: Vec<Node> = (0..node.child_count())
-        .filter_map(|i| node.child(i))
-        .collect();
+    let children: Vec<Node> = (0..node.child_count()).filter_map(|i| node.child(i)).collect();
 
     // Hash children kinds (ignore identifiers — already abstracted in structural_hash)
     for child in &children {
@@ -124,10 +124,8 @@ fn normalize_match_to_if(node: &Node, source: &str) -> Option<u64> {
     }
 
     // Check arms are true and false
-    let first_pattern = arms[0].child(0)
-        .map(|c| c.utf8_text(source.as_bytes()).unwrap_or(""));
-    let second_pattern = arms[1].child(0)
-        .map(|c| c.utf8_text(source.as_bytes()).unwrap_or(""));
+    let first_pattern = arms[0].child(0).map(|c| c.utf8_text(source.as_bytes()).unwrap_or(""));
+    let second_pattern = arms[1].child(0).map(|c| c.utf8_text(source.as_bytes()).unwrap_or(""));
 
     if !((first_pattern == Some("true") && second_pattern == Some("false"))
         || (first_pattern == Some("false") && second_pattern == Some("true")))
@@ -143,8 +141,12 @@ fn normalize_match_to_if(node: &Node, source: &str) -> Option<u64> {
     for i in 0..node.child_count() {
         if let Some(child) = node.child(i) {
             let ck = child.kind();
-            if ck != "match" && ck != "{" && ck != "}" && ck != "match_arm"
-                && ck != "," && ck != "=>"
+            if ck != "match"
+                && ck != "{"
+                && ck != "}"
+                && ck != "match_arm"
+                && ck != ","
+                && ck != "=>"
             {
                 hasher.update(ck.as_bytes());
             }
@@ -228,7 +230,10 @@ fn structural_hash(node: &Node, source: &str) -> u64 {
 ///
 /// Uses tree-sitter to identify function/method nodes and returns
 /// their names, source text, and line ranges.
-pub fn extract_functions(source: &str, language: Language) -> Vec<crate::core::types::FunctionSnippet> {
+pub fn extract_functions(
+    source: &str,
+    language: Language,
+) -> Vec<crate::core::types::FunctionSnippet> {
     let ts_lang = match language.tree_sitter_language() {
         Some(l) => l,
         None => return Vec::new(),
@@ -250,27 +255,13 @@ pub fn extract_functions(source: &str, language: Language) -> Vec<crate::core::t
     let function_kinds = match language {
         Language::Rust => &["function_item"][..],
         Language::Python => &["function_definition"][..],
-        Language::JavaScript | Language::TypeScript => &[
-            "function_declaration",
-            "function_expression",
-            "arrow_function",
-            "method_definition",
-        ],
-        Language::Go => &[
-            "function_declaration",
-            "method_declaration",
-        ],
-        Language::C => &[
-            "function_definition",
-        ],
-        Language::Cpp => &[
-            "function_definition",
-            "method_definition",
-        ],
-        Language::Java => &[
-            "method_declaration",
-            "constructor_declaration",
-        ],
+        Language::JavaScript | Language::TypeScript => {
+            &["function_declaration", "function_expression", "arrow_function", "method_definition"]
+        }
+        Language::Go => &["function_declaration", "method_declaration"],
+        Language::C => &["function_definition"],
+        Language::Cpp => &["function_definition", "method_definition"],
+        Language::Java => &["method_declaration", "constructor_declaration"],
         Language::Unknown => return Vec::new(),
     };
 
@@ -299,10 +290,7 @@ fn collect_function_nodes(
         // For arrow functions/expressions: might be assigned to a variable — leave as anonymous.
         let name = node
             .children(&mut node.walk())
-            .find(|c| {
-                c.kind() == "identifier"
-                    || c.kind() == "property_identifier"
-            })
+            .find(|c| c.kind() == "identifier" || c.kind() == "property_identifier")
             .and_then(|c| c.utf8_text(source.as_bytes()).ok())
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
@@ -406,10 +394,8 @@ pub fn generate_call_graph_hashes(source: &str, language: Language) -> Vec<u64> 
 
 /// Collect function definition spans (name + byte range)
 fn collect_function_spans(node: &Node, functions: &mut Vec<(String, usize, usize)>) {
-    let func_kinds = [
-        "function_item", "function_definition", "function_declaration",
-        "method_definition",
-    ];
+    let func_kinds =
+        ["function_item", "function_definition", "function_declaration", "method_definition"];
 
     if func_kinds.contains(&node.kind()) {
         let start = node.start_byte();
@@ -503,8 +489,8 @@ pub fn generate_def_use_hashes(source: &str, language: Language) -> Vec<u64> {
         if let Some((def_rel_pos, _, _)) = best_def {
             let mut h = Sha256::new();
             // Hash: relative positions within scope, normalized
-            let normalized = def_rel_pos.wrapping_mul(2654435761)
-                ^ use_rel_pos.wrapping_mul(3141592653);
+            let normalized =
+                def_rel_pos.wrapping_mul(2654435761) ^ use_rel_pos.wrapping_mul(3141592653);
             h.update(normalized.to_be_bytes());
             edges.push(u64::from_be_bytes(h.finalize()[..8].try_into().unwrap()));
         }
@@ -555,9 +541,8 @@ fn collect_def_uses(
     // Definitions
     match kind {
         "let_declaration" | "variable_declaration" => {
-            if let Some(def_ident) = node
-                .children(&mut node.walk())
-                .find(|c| c.kind() == "identifier")
+            if let Some(def_ident) =
+                node.children(&mut node.walk()).find(|c| c.kind() == "identifier")
             {
                 definitions.push((def_ident.start_byte() - fn_start, fn_start, scope_end));
             }
@@ -580,8 +565,11 @@ fn collect_def_uses(
                 }
             }
         }
-        "function_item" | "function_definition" | "function_declaration"
-        | "method_definition" | "arrow_function" => {
+        "function_item"
+        | "function_definition"
+        | "function_declaration"
+        | "method_definition"
+        | "arrow_function" => {
             let func_start = node.start_byte();
             let new_scope = node.end_byte();
             let mut skip_name = true;
@@ -613,8 +601,12 @@ fn collect_def_uses(
 
 /// Jaccard similarity for def-use graph hashes
 pub fn def_use_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
-    if a.is_empty() && b.is_empty() { return 1.0; }
-    if a.is_empty() || b.is_empty() { return 0.0; }
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
     let intersection = count_cfg_intersection(a, b);
     let union = a.len() + b.len() - intersection;
     intersection as f64 / union as f64
@@ -622,8 +614,12 @@ pub fn def_use_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
 
 /// Jaccard similarity for call graph hashes
 pub fn call_graph_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
-    if a.is_empty() && b.is_empty() { return 1.0; }
-    if a.is_empty() || b.is_empty() { return 0.0; }
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
     let intersection = count_cfg_intersection(a, b);
     let union = a.len() + b.len() - intersection;
     intersection as f64 / union as f64
@@ -632,34 +628,40 @@ pub fn call_graph_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
 /// Statement type classification for sequence comparison.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum StmtType {
-    Declaration,   // let, var, const
-    Assignment,    // =, +=, etc.
-    IfStmt,        // if
-    ForLoop,       // for
-    WhileLoop,     // while
-    MatchExpr,     // match
-    ReturnStmt,    // return
-    FunctionDef,   // fn/function/def
-    CallExpr,      // function call
-    Block,         // { }
+    Declaration, // let, var, const
+    Assignment,  // =, +=, etc.
+    IfStmt,      // if
+    ForLoop,     // for
+    WhileLoop,   // while
+    MatchExpr,   // match
+    ReturnStmt,  // return
+    FunctionDef, // fn/function/def
+    CallExpr,    // function call
+    Block,       // { }
     Other,
 }
 
 impl StmtType {
     fn from_kind(kind: &str) -> Self {
         match kind {
-            "let_declaration" | "variable_declaration" | "const_declaration"
-            | "declaration" => StmtType::Declaration,
+            "let_declaration" | "variable_declaration" | "const_declaration" | "declaration" => {
+                StmtType::Declaration
+            }
             "assignment_expression" | "compound_assignment_expr" => StmtType::Assignment,
             "if_statement" | "if_expression" | "else_clause" => StmtType::IfStmt,
-            "for_statement" | "for_expression"
-            | "for_in_statement" | "for_in_expression" => StmtType::ForLoop,
-            "while_statement" | "while_expression"
-            | "loop_statement" | "loop_expression" => StmtType::WhileLoop,
+            "for_statement" | "for_expression" | "for_in_statement" | "for_in_expression" => {
+                StmtType::ForLoop
+            }
+            "while_statement" | "while_expression" | "loop_statement" | "loop_expression" => {
+                StmtType::WhileLoop
+            }
             "match_statement" | "match_expression" => StmtType::MatchExpr,
             "return_statement" | "return_expression" => StmtType::ReturnStmt,
-            "function_item" | "function_definition" | "function_declaration"
-            | "method_definition" | "arrow_function" => StmtType::FunctionDef,
+            "function_item"
+            | "function_definition"
+            | "function_declaration"
+            | "method_definition"
+            | "arrow_function" => StmtType::FunctionDef,
             "call_expression" => StmtType::CallExpr,
             "block" | "body" => StmtType::Block,
             _ => StmtType::Other,
@@ -739,9 +741,15 @@ fn collect_statements(node: &Node, stmts: &mut Vec<u8>) {
     // These are statement-level nodes — record them
     let is_stmt = matches!(
         st,
-        StmtType::Declaration | StmtType::Assignment | StmtType::IfStmt
-            | StmtType::ForLoop | StmtType::WhileLoop | StmtType::MatchExpr
-            | StmtType::ReturnStmt | StmtType::FunctionDef | StmtType::CallExpr
+        StmtType::Declaration
+            | StmtType::Assignment
+            | StmtType::IfStmt
+            | StmtType::ForLoop
+            | StmtType::WhileLoop
+            | StmtType::MatchExpr
+            | StmtType::ReturnStmt
+            | StmtType::FunctionDef
+            | StmtType::CallExpr
     );
 
     if is_stmt {
@@ -751,14 +759,29 @@ fn collect_statements(node: &Node, stmts: &mut Vec<u8>) {
     // Only recurse into block-like containers, not every expression
     let recurse = matches!(
         kind,
-        "source_file" | "program" | "block" | "body"
-            | "function_item" | "function_definition" | "function_declaration"
-            | "method_definition" | "arrow_function"
-            | "if_statement" | "if_expression" | "else_clause"
-            | "for_statement" | "for_expression" | "while_statement"
-            | "while_expression" | "loop_statement" | "loop_expression"
-            | "match_statement" | "match_expression" | "match_arm"
-            | "let_declaration" | "variable_declaration"
+        "source_file"
+            | "program"
+            | "block"
+            | "body"
+            | "function_item"
+            | "function_definition"
+            | "function_declaration"
+            | "method_definition"
+            | "arrow_function"
+            | "if_statement"
+            | "if_expression"
+            | "else_clause"
+            | "for_statement"
+            | "for_expression"
+            | "while_statement"
+            | "while_expression"
+            | "loop_statement"
+            | "loop_expression"
+            | "match_statement"
+            | "match_expression"
+            | "match_arm"
+            | "let_declaration"
+            | "variable_declaration"
     );
 
     if recurse {
@@ -817,17 +840,28 @@ pub fn generate_cfg_hashes(source: &str, language: Language) -> Vec<u64> {
 fn is_control_flow(kind: &str) -> bool {
     matches!(
         kind,
-        "if_statement" | "if_expression"
-            | "while_statement" | "while_expression"
-            | "for_statement" | "for_expression"
-            | "loop_statement" | "loop_expression"
-            | "match_statement" | "match_expression"
-            | "return_statement" | "return_expression"
-            | "break_statement" | "continue_statement"
-            | "try_statement" | "throw_statement"
-            | "switch_statement" | "case_statement"
-            | "function_item" | "function_definition"
-            | "function_declaration" | "arrow_function"
+        "if_statement"
+            | "if_expression"
+            | "while_statement"
+            | "while_expression"
+            | "for_statement"
+            | "for_expression"
+            | "loop_statement"
+            | "loop_expression"
+            | "match_statement"
+            | "match_expression"
+            | "return_statement"
+            | "return_expression"
+            | "break_statement"
+            | "continue_statement"
+            | "try_statement"
+            | "throw_statement"
+            | "switch_statement"
+            | "case_statement"
+            | "function_item"
+            | "function_definition"
+            | "function_declaration"
+            | "arrow_function"
             | "method_definition"
     )
 }
@@ -911,10 +945,19 @@ pub fn generate_bag_ast_hashes(source: &str, language: Language) -> Vec<u64> {
 fn is_block_like(kind: &str) -> bool {
     matches!(
         kind,
-        "block" | "body" | "source_file" | "program"
-            | "if_statement" | "while_statement" | "for_statement"
-            | "loop_statement" | "match_arm" | "else_clause"
-            | "function_item" | "function_definition" | "function_declaration"
+        "block"
+            | "body"
+            | "source_file"
+            | "program"
+            | "if_statement"
+            | "while_statement"
+            | "for_statement"
+            | "loop_statement"
+            | "match_arm"
+            | "else_clause"
+            | "function_item"
+            | "function_definition"
+            | "function_declaration"
     )
 }
 
@@ -959,8 +1002,12 @@ fn collect_bag_hashes(node: &Node, source: &str, hashes: &mut Vec<u64>) {
 
 /// Jaccard similarity for bag-of-statements AST hashes
 pub fn bag_ast_jaccard_similarity(a: &[u64], b: &[u64]) -> f64 {
-    if a.is_empty() && b.is_empty() { return 1.0; }
-    if a.is_empty() || b.is_empty() { return 0.0; }
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
     let intersection = count_cfg_intersection(a, b);
     let union = a.len() + b.len() - intersection;
     intersection as f64 / union as f64
@@ -1063,7 +1110,13 @@ fn compute(y: i32) -> i32 {
         let h2 = generate_ast_hashes(code2, Language::Rust).unwrap();
         let sim = ast_jaccard_similarity(&h1, &h2);
         // Should be 100% when only variable/function names differ
-        assert!(sim > 0.99, "Expected 100% similarity, got {:.2}%. Hashes A: {:?}, B: {:?}", sim * 100.0, &h1[..5.min(h1.len())], &h2[..5.min(h2.len())]);
+        assert!(
+            sim > 0.99,
+            "Expected 100% similarity, got {:.2}%. Hashes A: {:?}, B: {:?}",
+            sim * 100.0,
+            &h1[..5.min(h1.len())],
+            &h2[..5.min(h2.len())]
+        );
     }
 
     #[test]
@@ -1128,7 +1181,11 @@ fn compute(y: i32) -> i32 {
         let h1 = generate_bag_ast_hashes(code1, Language::Rust);
         let h2 = generate_bag_ast_hashes(code2, Language::Rust);
         let sim = bag_ast_jaccard_similarity(&h1, &h2);
-        assert!(sim > 0.7, "Reordered statements should have high bag-AST similarity, got {}", sim);
+        assert!(
+            sim > 0.7,
+            "Reordered statements should have high bag-AST similarity, got {}",
+            sim
+        );
     }
 
     #[test]
@@ -1198,7 +1255,8 @@ fn compute(y: i32) -> i32 {
 
     #[test]
     fn test_stmt_hashes_for_code() {
-        let code = "fn main() {\n    let x = 1;\n    if x > 0 {\n        return x;\n    }\n    0\n}";
+        let code =
+            "fn main() {\n    let x = 1;\n    if x > 0 {\n        return x;\n    }\n    0\n}";
         let hashes = generate_statement_hashes(code, Language::Rust);
         assert!(!hashes.is_empty(), "Non-trivial code should produce statement hashes");
     }
@@ -1247,7 +1305,8 @@ fn compute(y: i32) -> i32 {
     fn test_for_while_normalization() {
         // for-loop and equivalent while-loop should have overlapping AST hashes
         let for_code = "fn main() { for i in 0..10 { println!(\"{}\", i); } }";
-        let while_code = "fn main() { let mut i = 0; while i < 10 { println!(\"{}\", i); i += 1; } }";
+        let while_code =
+            "fn main() { let mut i = 0; while i < 10 { println!(\"{}\", i); i += 1; } }";
         let h1 = generate_ast_hashes(for_code, Language::Rust).unwrap_or_default();
         let h2 = generate_ast_hashes(while_code, Language::Rust).unwrap_or_default();
         // Should have some overlap through normalized hashes

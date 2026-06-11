@@ -1,8 +1,8 @@
+use crate::core::types::{Language, SourceFile};
 use anyhow::{Context, Result};
 use glob::Pattern;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use crate::core::types::{Language, SourceFile};
 
 /// Fetcher for GitHub repositories
 pub struct GitHubFetcher {
@@ -20,15 +20,25 @@ impl GitHubFetcher {
         Self {
             work_dir: work_dir.into(),
             include_patterns: vec![
-                "*.rs".into(), "*.py".into(), "*.js".into(),
-                "*.ts".into(), "*.go".into(), "*.c".into(),
-                "*.cpp".into(), "*.h".into(), "*.hpp".into(),
+                "*.rs".into(),
+                "*.py".into(),
+                "*.js".into(),
+                "*.ts".into(),
+                "*.go".into(),
+                "*.c".into(),
+                "*.cpp".into(),
+                "*.h".into(),
+                "*.hpp".into(),
                 "*.java".into(),
             ],
             exclude_patterns: vec![
-                "*test*".into(), "*spec*".into(), "*.min.*".into(),
-                "vendor/*".into(), "node_modules/*".into(),
-                "target/*".into(), "__pycache__/*".into(),
+                "*test*".into(),
+                "*spec*".into(),
+                "*.min.*".into(),
+                "vendor/*".into(),
+                "node_modules/*".into(),
+                "target/*".into(),
+                "__pycache__/*".into(),
             ],
         }
     }
@@ -87,20 +97,14 @@ impl GitHubFetcher {
         if path.is_file() {
             // Use full path as-is so main.rs can re-read the file for chunk display
             let display_path = path.to_string_lossy().to_string();
-            return Ok(self.read_file(path, &display_path)
-                .into_iter()
-                .collect());
+            return Ok(self.read_file(path, &display_path).into_iter().collect());
         }
 
-        let include_globs: Vec<Pattern> = self.include_patterns
-            .iter()
-            .filter_map(|p| Pattern::new(p).ok())
-            .collect();
+        let include_globs: Vec<Pattern> =
+            self.include_patterns.iter().filter_map(|p| Pattern::new(p).ok()).collect();
 
-        let exclude_globs: Vec<Pattern> = self.exclude_patterns
-            .iter()
-            .filter_map(|p| Pattern::new(p).ok())
-            .collect();
+        let exclude_globs: Vec<Pattern> =
+            self.exclude_patterns.iter().filter_map(|p| Pattern::new(p).ok()).collect();
 
         let mut files = Vec::new();
         self.walk_dir(path, path, &include_globs, &exclude_globs, &mut files)?;
@@ -118,10 +122,7 @@ impl GitHubFetcher {
         for entry in std::fs::read_dir(current)? {
             let entry = entry?;
             let path = entry.path();
-            let rel_path = path.strip_prefix(base)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .to_string();
+            let rel_path = path.strip_prefix(base).unwrap_or(&path).to_string_lossy().to_string();
 
             // Check exclude patterns
             if exclude_globs.iter().any(|p| p.matches(&rel_path)) {
@@ -154,18 +155,11 @@ impl GitHubFetcher {
         let mut content = std::fs::read_to_string(path).ok()?;
         // Normalize CRLF → LF so tokenizer line tracking works correctly
         content = content.replace("\r\n", "\n");
-        let ext = path.extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let language = Language::from_extension(ext);
         let size = content.len();
 
-        Some(SourceFile {
-            path: rel_path.to_string(),
-            content,
-            language,
-            size,
-        })
+        Some(SourceFile { path: rel_path.to_string(), content, language, size })
     }
 }
 
@@ -193,25 +187,16 @@ mod tests {
 
     #[test]
     fn test_extract_repo_name_https() {
-        assert_eq!(
-            extract_repo_name("https://github.com/user/repo.git"),
-            "repo"
-        );
+        assert_eq!(extract_repo_name("https://github.com/user/repo.git"), "repo");
     }
 
     #[test]
     fn test_extract_repo_name_ssh() {
-        assert_eq!(
-            extract_repo_name("git@github.com:user/repo.git"),
-            "repo"
-        );
+        assert_eq!(extract_repo_name("git@github.com:user/repo.git"), "repo");
     }
 
     #[test]
     fn test_extract_repo_name_no_git() {
-        assert_eq!(
-            extract_repo_name("https://github.com/user/repo"),
-            "repo"
-        );
+        assert_eq!(extract_repo_name("https://github.com/user/repo"), "repo");
     }
 }

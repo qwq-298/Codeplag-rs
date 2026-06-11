@@ -31,46 +31,27 @@ fn binary_has_version() {
 #[test]
 fn analyze_local_directory() {
     let mut cmd = Command::cargo_bin("codeplag").unwrap();
-    cmd.args([
-        "analyze",
-        "--path",
-        "test_fixtures/original",
-        "--output",
-        "text",
-    ])
-    .assert()
-    .success()
-    .stdout(predicate::str::contains("Found"));
+    cmd.args(["analyze", "--path", "test_fixtures/original", "--output", "text"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Found"));
 }
 
 #[test]
 fn analyze_with_json_output() {
     let mut cmd = Command::cargo_bin("codeplag").unwrap();
-    cmd.args([
-        "analyze",
-        "--path",
-        "test_fixtures/original",
-        "--output",
-        "json",
-    ])
-    .assert()
-    .success();
+    cmd.args(["analyze", "--path", "test_fixtures/original", "--output", "json"])
+        .assert()
+        .success();
 }
 
 #[test]
 fn analyze_with_functions_flag() {
     let mut cmd = Command::cargo_bin("codeplag").unwrap();
-    cmd.args([
-        "--functions",
-        "analyze",
-        "--path",
-        "test_fixtures/original",
-        "--output",
-        "text",
-    ])
-    .assert()
-    .success()
-    .stdout(predicate::str::contains("Found"));
+    cmd.args(["--functions", "analyze", "--path", "test_fixtures/original", "--output", "text"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Found"));
 }
 
 #[test]
@@ -78,7 +59,8 @@ fn analyze_with_custom_threshold() {
     let mut cmd = Command::cargo_bin("codeplag").unwrap();
     // Global options must come BEFORE the subcommand
     cmd.args([
-        "--threshold", "0.9",
+        "--threshold",
+        "0.9",
         "analyze",
         "--path",
         "test_fixtures/original",
@@ -93,8 +75,10 @@ fn analyze_with_custom_threshold() {
 fn analyze_with_custom_kgram_window() {
     let mut cmd = Command::cargo_bin("codeplag").unwrap();
     cmd.args([
-        "--k-gram", "6",
-        "--window", "5",
+        "--k-gram",
+        "6",
+        "--window",
+        "5",
         "analyze",
         "--path",
         "test_fixtures/original",
@@ -213,7 +197,8 @@ fn project_with_json_output() {
 fn project_with_threshold() {
     let mut cmd = Command::cargo_bin("codeplag").unwrap();
     cmd.args([
-        "--threshold", "0.9",
+        "--threshold",
+        "0.9",
         "project",
         "-a",
         "test_fixtures/original",
@@ -231,23 +216,15 @@ fn project_with_threshold() {
 #[test]
 fn analyze_nonexistent_path_fails() {
     let mut cmd = Command::cargo_bin("codeplag").unwrap();
-    cmd.args(["analyze", "--path", "nonexistent_directory_xyz"])
-        .assert()
-        .failure();
+    cmd.args(["analyze", "--path", "nonexistent_directory_xyz"]).assert().failure();
 }
 
 #[test]
 fn compare_nonexistent_file_fails() {
     let mut cmd = Command::cargo_bin("codeplag").unwrap();
-    cmd.args([
-        "compare",
-        "--file",
-        "nonexistent.rs",
-        "--against",
-        "nonexistent_dir",
-    ])
-    .assert()
-    .failure();
+    cmd.args(["compare", "--file", "nonexistent.rs", "--against", "nonexistent_dir"])
+        .assert()
+        .failure();
 }
 
 #[test]
@@ -269,16 +246,9 @@ fn invalid_threshold_rejected() {
 #[test]
 fn verbose_flag_accepted() {
     let mut cmd = Command::cargo_bin("codeplag").unwrap();
-    cmd.args([
-        "--verbose",
-        "analyze",
-        "--path",
-        "test_fixtures/original",
-        "--output",
-        "text",
-    ])
-    .assert()
-    .success();
+    cmd.args(["--verbose", "analyze", "--path", "test_fixtures/original", "--output", "text"])
+        .assert()
+        .success();
 }
 
 // ── Batch Command (basic smoke test) ──────────────────────────────

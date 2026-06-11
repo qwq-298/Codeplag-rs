@@ -1,2 +1,2 @@
-pub mod winnowing;
 pub mod ast;
+pub mod winnowing;
