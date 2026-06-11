@@ -236,12 +236,13 @@ fn main() {
             // Take a mix: first few (most common) + last few (most specific)
             let mut picked: Vec<(String, String)> = Vec::new();
             let n = term_lang_pairs.len();
-            for i in 0..3.min(n) {
-                picked.push(term_lang_pairs[i].clone()); // shorter terms
+            for (term, lang) in term_lang_pairs.iter().take(3.min(n)) {
+                picked.push((term.clone(), lang.clone())); // shorter terms
             }
-            for i in (n.saturating_sub(3))..n {
-                if !picked.contains(&term_lang_pairs[i]) {
-                        picked.push(term_lang_pairs[i].clone()); // longer terms
+            for (term, lang) in term_lang_pairs.iter().skip(n.saturating_sub(3)) {
+                let pair = (term.clone(), lang.clone());
+                if !picked.contains(&pair) {
+                        picked.push(pair); // longer terms
                 }
             }
             picked.truncate(8);
@@ -635,8 +636,7 @@ fn print_batch_results(
             // Detail for top 3 pairs
             println!("\n  Top matches detail:\n");
             let top_n = results.len().min(3);
-            for i in 0..top_n {
-                let (name_a, name_b, result) = &results[i];
+            for (name_a, name_b, result) in results.iter().take(top_n) {
                 println!(
                     "  {} ↔ {}  ({:.1}% overall)",
                     name_a, name_b, result.project_score * 100.0

@@ -97,9 +97,7 @@ pub fn normalize_whitespace(source: &str) -> String {
             let next_is_id = next.is_alphanumeric() || next == '_';
             let prev_is_bracket = brackets.contains(&prev);
             let next_is_bracket = brackets.contains(&next);
-            if prev_is_id && next_is_id {
-                cleaned.push(' ');
-            } else if !prev_is_bracket && !next_is_bracket {
+            if (prev_is_id && next_is_id) || (!prev_is_bracket && !next_is_bracket) {
                 cleaned.push(' ');
             }
         } else {
@@ -527,12 +525,30 @@ fn count_intersection(a: &[u32], b: &[u32]) -> usize {
 mod tests {
     use super::*;
 
+    // ── Comment Stripping ──────────────────────────────────────
+
     #[test]
     fn test_strip_comments() {
         assert_eq!(strip_comments("// comment\ncode"), "\ncode");
         assert_eq!(strip_comments("code /* block */ more"), "code  more");
         assert_eq!(strip_comments("// line\n/* block */\ncode"), "\n\ncode");
     }
+
+    #[test]
+    fn test_strip_multiline_comment() {
+        let input = "start /* multi\nline\ncomment */ end";
+        let output = strip_comments(input);
+        assert!(!output.contains("multi"), "Multiline comment should be stripped");
+        assert!(output.contains("end"), "Code after comment should remain");
+    }
+
+    #[test]
+    fn test_strip_comments_no_comment() {
+        let code = "fn main() { println!(\"hello\"); }";
+        assert_eq!(strip_comments(code), code);
+    }
+
+    // ── Whitespace Normalization ───────────────────────────────
 
     #[test]
     fn test_normalize_whitespace() {
@@ -543,7 +559,6 @@ mod tests {
 
     #[test]
     fn test_normalize_with_comments() {
-        // Comments should be stripped before normalization
         let with_comment = "// header\npub fn foo(x: i32) { x + 1 }";
         let no_comment = "pub fn foo(x: i32) { x + 1 }";
         assert_eq!(normalize_whitespace(with_comment), normalize_whitespace(no_comment));
@@ -551,7 +566,6 @@ mod tests {
 
     #[test]
     fn test_normalize_bracket_spacing() {
-        // After normalization, formatting differences should disappear
         assert_eq!(normalize_whitespace("arr[j]"), "arr[j]");
         assert_eq!(normalize_whitespace("arr[ j ]"), "arr[j]");
         assert_eq!(normalize_whitespace("x ;"), "x;");
@@ -559,13 +573,11 @@ mod tests {
     }
 
     #[test]
-    fn test_format_immune_fingerprints() {
-        let compact = "pub fn foo(x: i32) { x + 1 }";
-        let styled = "pub fn foo( x : i32 )\n{\n    x + 1 \n}\n";
-        let fp1 = generate_fingerprints(compact, Language::Rust, 5, 4);
-        let fp2 = generate_fingerprints(styled, Language::Rust, 5, 4);
-        assert_eq!(fp1, fp2, "Formatting changes should not affect fingerprints");
+    fn test_normalize_empty_string() {
+        assert_eq!(normalize_whitespace(""), "");
     }
+
+    // ── Tokenization ───────────────────────────────────────────
 
     #[test]
     fn test_tokenize_simple() {
@@ -577,12 +589,149 @@ mod tests {
     }
 
     #[test]
+    fn test_tokenize_string_literal() {
+        // Test tokenization handles string-like content
+        let code = "print(\"hello\")";
+        let tokens = tokenize(code, Language::Python);
+        // At minimum, tokenization should not panic and should produce tokens
+        assert!(!tokens.is_empty(), "Should produce tokens for any code");
+        // Verify string content is captured somehow
+        let has_string_content = tokens.iter().any(|t| t.text.contains("hello"));
+        assert!(has_string_content, "String content 'hello' should appear in tokens");
+    }
+
+    #[test]
+    fn test_tokenize_operators() {
+        // Most non-alphanumeric chars become Punctuation in this tokenizer
+        // Only '/' becomes Operator (or starts a comment)
+        let code = "a + b";
+        let tokens = tokenize(code, Language::Rust);
+        let kinds: Vec<TokenKind> = tokens.iter().map(|t| t.kind).collect();
+        // `+` is tokenized as Punctuation
+        assert!(kinds.contains(&TokenKind::Punctuation), "Should have punctuation tokens");
+    }
+
+    #[test]
+    fn test_tokenize_empty() {
+        let tokens = tokenize("", Language::Rust);
+        assert!(tokens.is_empty());
+    }
+
+    // ── Format-Immune Fingerprinting ───────────────────────────
+
+    #[test]
+    fn test_format_immune_fingerprints() {
+        let compact = "pub fn foo(x: i32) { x + 1 }";
+        let styled = "pub fn foo( x : i32 )\n{\n    x + 1 \n}\n";
+        let fp1 = generate_fingerprints(compact, Language::Rust, 5, 4);
+        let fp2 = generate_fingerprints(styled, Language::Rust, 5, 4);
+        assert_eq!(fp1, fp2, "Formatting changes should not affect fingerprints");
+    }
+
+    #[test]
+    fn test_fingerprints_non_empty_for_code() {
+        let code = "fn main() { let x = 1; let y = 2; let z = 3; let w = 4; let v = 5; }";
+        let fp = generate_fingerprints(code, Language::Rust, 3, 2);
+        assert!(!fp.is_empty(), "Fingerprints should not be empty for non-trivial code");
+    }
+
+    // ── k-gram Hashing ─────────────────────────────────────────
+
+    #[test]
+    fn test_kgram_hashes_basic() {
+        let code = "fn add(a: i32, b: i32) -> i32 { a + b }";
+        let tokens = tokenize(code, Language::Rust);
+        let hashes = compute_k_gram_hashes(&tokens, 3);
+        assert!(!hashes.is_empty(), "k-gram hashes should be produced");
+    }
+
+    #[test]
+    fn test_kgram_hashes_too_short() {
+        let code = "x";
+        let tokens = tokenize(code, Language::Rust);
+        let hashes = compute_k_gram_hashes(&tokens, 5);
+        assert!(hashes.is_empty(), "Should return empty when code is shorter than k");
+    }
+
+    // ── Winnowing ──────────────────────────────────────────────
+
+    #[test]
     fn test_winnowing_deterministic() {
         let code = "fn add(a: i32, b: i32) -> i32 { a + b }";
         let fp1 = generate_fingerprints(code, Language::Rust, 5, 4);
         let fp2 = generate_fingerprints(code, Language::Rust, 5, 4);
         assert_eq!(fp1, fp2);
     }
+
+    #[test]
+    fn test_winnow_reduces_hashes() {
+        let hashes: Vec<u32> = (0..100).collect();
+        let winnowed = winnow(&hashes, 10);
+        assert!(winnowed.len() < hashes.len(), "Winnowing should reduce hash count");
+    }
+
+    #[test]
+    fn test_winnow_no_duplicate_positions() {
+        // Winnowing tracks positions to avoid recording the same position twice,
+        // but the SAME hash value can appear at DIFFERENT positions legitimately
+        let hashes: Vec<u32> = vec![5, 3, 1, 3, 5, 2, 4, 5, 1];
+        let winnowed = winnow(&hashes, 3);
+        // Should produce fewer hashes than input windows
+        let expected_windows = hashes.len().saturating_sub(2); // window_size=3 → num_windows
+        assert!(winnowed.len() <= expected_windows,
+            "Winnowing should not produce more fingerprints than windows");
+    }
+
+    // ── Token Frequency ────────────────────────────────────────
+
+    #[test]
+    fn test_token_frequency_length() {
+        let code = "fn main() { let x = 42; }";
+        let freq = compute_token_frequency(code, Language::Rust);
+        assert_eq!(freq.len(), 6, "Frequency vector should have 6 dimensions");
+    }
+
+    #[test]
+    fn test_token_frequency_normalized() {
+        let code = "fn main() { let x = 42; let y = 100; }";
+        let freq = compute_token_frequency(code, Language::Rust);
+        let sum: f64 = freq.iter().sum();
+        assert!((sum - 1.0).abs() < 1e-10 || sum == 0.0,
+            "Frequency sum should be 1.0 or 0.0, got {}", sum);
+    }
+
+    #[test]
+    fn test_token_frequency_empty_code() {
+        let freq = compute_token_frequency("", Language::Rust);
+        assert_eq!(freq, vec![0.0; 6], "Empty code should yield zero frequency vector");
+    }
+
+    // ── Cosine Similarity ──────────────────────────────────────
+
+    #[test]
+    fn test_cosine_identical_vectors() {
+        let v = vec![1.0, 2.0, 3.0, 0.0, 0.0, 0.0];
+        let sim = token_cosine_similarity(&v, &v);
+        assert!((sim - 1.0).abs() < 1e-10, "Identical vectors should have cosine=1.0");
+    }
+
+    #[test]
+    fn test_cosine_zero_vectors() {
+        let zero = vec![0.0; 6];
+        let sim = token_cosine_similarity(&zero, &zero);
+        // Implementation returns 1.0 when both magnitudes are 0 (identical zero vectors)
+        assert!((sim - 1.0).abs() < 1e-10, "Two zero vectors should be treated as identical");
+    }
+
+    #[test]
+    fn test_cosine_one_zero_vector() {
+        let v = vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let zero = vec![0.0; 6];
+        let sim = token_cosine_similarity(&v, &zero);
+        assert_eq!(sim, 0.0, "One zero vector should yield similarity 0.0");
+    }
+
+    // ── Jaccard Similarity ─────────────────────────────────────
 
     #[test]
     fn test_jaccard_identical() {
@@ -596,5 +745,58 @@ mod tests {
         let a = vec![1, 2, 3];
         let b = vec![4, 5, 6];
         assert!((jaccard_similarity(&a, &b) - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_jaccard_partial_overlap() {
+        let a = vec![1, 2, 3, 4];
+        let b = vec![3, 4, 5, 6];
+        let sim = jaccard_similarity(&a, &b);
+        assert!((sim - 2.0 / 6.0).abs() < 1e-10,
+            "Expected 2/6, got {}", sim);
+    }
+
+    #[test]
+    fn test_jaccard_empty_inputs() {
+        // Both empty = identical (by convention in this implementation)
+        assert!((jaccard_similarity(&[], &[]) - 1.0).abs() < 1e-10);
+        assert_eq!(jaccard_similarity(&[1, 2], &[]), 0.0);
+        assert_eq!(jaccard_similarity(&[], &[1, 2]), 0.0);
+    }
+
+    #[test]
+    fn test_jaccard_with_duplicates() {
+        let a = vec![1, 1, 2, 2, 3];
+        let b = vec![1, 2, 3];
+        assert!((jaccard_similarity(&a, &b) - 1.0).abs() < 1e-10,
+            "Duplicates should not affect Jaccard result");
+    }
+
+    // ── generate_fingerprints_with_lines ───────────────────────
+
+    #[test]
+    fn test_fingerprints_with_lines() {
+        let code = "fn main() {\n    let x = 1;\n    let y = 2;\n}";
+        let fp = generate_fingerprints_with_lines(code, Language::Rust, 3, 2);
+        // Each fingerprint should have a valid line number
+        for &(_, line) in &fp {
+            assert!(line > 0, "Line numbers should be positive");
+        }
+    }
+
+    // ── Cross-language tokenization ────────────────────────────
+
+    #[test]
+    fn test_tokenize_python() {
+        let code = "def foo(x):\n    return x + 1";
+        let tokens = tokenize(code, Language::Python);
+        assert!(!tokens.is_empty(), "Python code should tokenize");
+    }
+
+    #[test]
+    fn test_tokenize_javascript() {
+        let code = "function foo(x) { return x + 1; }";
+        let tokens = tokenize(code, Language::JavaScript);
+        assert!(!tokens.is_empty(), "JavaScript code should tokenize");
     }
 }

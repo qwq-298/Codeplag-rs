@@ -1,0 +1,8 @@
+# Clippy configuration for Codeplag-rs
+# Allow some pedantic lints that are too noisy for this project
+
+# Cognitive complexity threshold (default 25)
+cognitive-complexity-threshold = 30
+
+# Allow these lints
+allow-unwrap-in-tests = true

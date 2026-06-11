@@ -211,3 +211,115 @@ impl Default for AnalyzerConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_language_from_extension_rust() {
+        assert_eq!(Language::from_extension("rs"), Language::Rust);
+    }
+
+    #[test]
+    fn test_language_from_extension_python() {
+        assert_eq!(Language::from_extension("py"), Language::Python);
+    }
+
+    #[test]
+    fn test_language_from_extension_javascript() {
+        assert_eq!(Language::from_extension("js"), Language::JavaScript);
+    }
+
+    #[test]
+    fn test_language_from_extension_typescript() {
+        assert_eq!(Language::from_extension("ts"), Language::TypeScript);
+    }
+
+    #[test]
+    fn test_language_from_extension_go() {
+        assert_eq!(Language::from_extension("go"), Language::Go);
+    }
+
+    #[test]
+    fn test_language_from_extension_c() {
+        assert_eq!(Language::from_extension("c"), Language::C);
+    }
+
+    #[test]
+    fn test_language_from_extension_cpp() {
+        assert_eq!(Language::from_extension("cpp"), Language::Cpp);
+        assert_eq!(Language::from_extension("cc"), Language::Cpp);
+        assert_eq!(Language::from_extension("cxx"), Language::Cpp);
+    }
+
+    #[test]
+    fn test_language_from_extension_java() {
+        assert_eq!(Language::from_extension("java"), Language::Java);
+    }
+
+    #[test]
+    fn test_language_from_extension_unknown() {
+        assert_eq!(Language::from_extension("txt"), Language::Unknown);
+        assert_eq!(Language::from_extension(""), Language::Unknown);
+    }
+
+    #[test]
+    fn test_tree_sitter_language_rust() {
+        assert!(Language::Rust.tree_sitter_language().is_some());
+    }
+
+    #[test]
+    fn test_tree_sitter_language_unknown() {
+        assert!(Language::Unknown.tree_sitter_language().is_none());
+    }
+
+    #[test]
+    fn test_default_config_values() {
+        let config = AnalyzerConfig::default();
+        assert_eq!(config.k_gram_size, 5);
+        assert_eq!(config.window_size, 4);
+        assert!((config.threshold - 0.5).abs() < 1e-10);
+        assert_eq!(config.min_file_size, 100);
+        assert_eq!(config.max_file_size, 1_000_000);
+    }
+
+    #[test]
+    fn test_source_file_creation() {
+        let sf = SourceFile {
+            path: "test.rs".into(),
+            content: "fn main() {}".into(),
+            language: Language::Rust,
+            size: 13,
+        };
+        assert_eq!(sf.path, "test.rs");
+        assert_eq!(sf.language, Language::Rust);
+    }
+
+    #[test]
+    fn test_function_snippet_creation() {
+        let snippet = FunctionSnippet {
+            name: "main".into(),
+            content: "fn main() {}".into(),
+            start_line: 1,
+            end_line: 1,
+            language: Language::Rust,
+        };
+        assert_eq!(snippet.name, "main");
+        assert_eq!(snippet.start_line, 1);
+    }
+
+    #[test]
+    fn test_similarity_result_creation() {
+        let result = SimilarityResult {
+            file_a: "a.rs".into(),
+            file_b: "b.rs".into(),
+            similarity_score: 0.85,
+            winnowing_score: 0.9,
+            ast_score: 0.8,
+            matched_chunks: vec![],
+        };
+        assert!(result.similarity_score > 0.0);
+        assert!(result.similarity_score <= 1.0);
+    }
+}

@@ -1,0 +1,7 @@
+# Rustfmt configuration for Codeplag-rs
+max_width = 100
+tab_spaces = 4
+edition = "2021"
+use_small_heuristics = "Max"
+fn_call_width = 80
+chain_width = 80
